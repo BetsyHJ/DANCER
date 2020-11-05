@@ -14,9 +14,9 @@ def ndcg_(target_pos, K):
 def calculate_metrics(target_pos):
     results = {}
     K = 10
-    results['mrr'] = mrr_(target_pos)
-    results['hit@'+str(K)] = hit_(target_pos, K)
-    results['ndcg@'+str(K)] = ndcg_(target_pos, K)
+    results['mrr'] = round(mrr_(target_pos), 3)
+    results['hit@'+str(K)] = round(hit_(target_pos, K), 3)
+    results['ndcg@'+str(K)] = round(ndcg_(target_pos, K), 3)
     return results
 
 # def out_results(results):
