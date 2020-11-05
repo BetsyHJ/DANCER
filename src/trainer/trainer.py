@@ -180,11 +180,13 @@ class Trainer(AbstractTrainer):
         start = time()
         for epoch_idx in range(self.epochs):
             train_loss = self._train_epoch(interaction)
-            if (epoch_idx + 1) % 1 == 0: # evaluate on valid set
+            if (epoch_idx + 1) % 10 == 0: # evaluate on valid set
+                self.save_model(epoch_idx)
+                # self.load_model()
                 results = self.evaluate()
                 print("epoch %d, time-consumin: %f s, train-loss: %f, \nresults on validset: %s" % (epoch_idx+1, train_loss, time()-start, str(results)))
                 start = time()
-
+                
     def _eval_epoch(self, interaction):
         seq_list = interaction['seq']
         seq_len = interaction['seq_len']
@@ -217,6 +219,16 @@ class Trainer(AbstractTrainer):
             losses.backward()
             self.optimizer.step()
         return total_loss
+
+    def save_model(self, epoch):
+        state = {'net': self.model.state_dict(), 'optimizer':self.optimizer.state_dict(), 'epoch':epoch}
+        torch.save(state, self.saved_model_file)
+    
+    def load_model(self):
+        checkpoint = torch.load(self.saved_model_file)
+        self.model.load_state_dict(checkpoint['net'])
+        self.optimizer.load_state_dict(checkpoint['optimizer'])
+
 
     def evaluate(self):
         interaction = self._data_pre_fullseq(self.data.train_full)
