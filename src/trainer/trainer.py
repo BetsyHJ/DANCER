@@ -19,7 +19,8 @@ class AbstractTrainer(object):
 
     def __init__(self, config, model, data):
         self.config = config
-        self.model = model
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.model = model.to(self.device)
         self.data = data
         self.learner = 'Adam'
         self.learning_rate = 1e-3
@@ -41,7 +42,6 @@ class Trainer(AbstractTrainer):
         super(Trainer, self).__init__(config, model, data)
 
         self.optimizer = config['optimizer']
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.saved_model_file = "./checkpoint_dir/ml-100k" # config['checkpoint_dir']
         self.epochs = 100 # config['epochs']
         self.batch_size = 512
@@ -184,7 +184,7 @@ class Trainer(AbstractTrainer):
                 self.save_model(epoch_idx)
                 # self.load_model()
                 results = self.evaluate()
-                print("epoch %d, time-consumin: %f s, train-loss: %f, \nresults on validset: %s" % (epoch_idx+1, train_loss, time()-start, str(results)))
+                print("epoch %d, time-consumin: %f s, train-loss: %f, \nresults on validset: %s" % (epoch_idx+1, time()-start, train_loss, str(results)))
                 start = time()
                 
     def _eval_epoch(self, interaction):
@@ -237,7 +237,7 @@ class Trainer(AbstractTrainer):
         targets = interaction['target']
         target_scores = torch.gather(scores, 1, targets.view(-1, 1)) # [B 1]
         target_pos = (scores >= target_scores).sum(-1) # [B]
-        results = calculate_metrics(target_pos.numpy())
+        results = calculate_metrics(target_pos.cpu().numpy())
         return results
         
 
