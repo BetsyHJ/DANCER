@@ -14,11 +14,12 @@ class GRU4Rec(nn.Module):
         self.lr_decay_step = int(config['lr_decay_step'])
         self.batch_size = int(config['batch_size'])
         self.num_layers = 1
-        self.n_items = data.n_items + 1 # one for padding
+        self.n_items = data.n_items # one for padding
         self.dropout_prob = 0.1
 
         # define layers and loss
-        self.item_embedding = nn.Embedding(self.n_items, self.embedding_size, padding_idx=0)
+        self.item_embedding = nn.Embedding(self.n_items+1, self.embedding_size, padding_idx=self.n_items)
+
         self.emb_dropout = nn.Dropout(self.dropout_prob)
         self.gru_layers = nn.GRU(
             input_size=self.embedding_size,
@@ -42,8 +43,8 @@ class GRU4Rec(nn.Module):
         elif isinstance(module, nn.GRU):
             xavier_uniform_(self.gru_layers.weight_hh_l0)
             xavier_uniform_(self.gru_layers.weight_ih_l0)
-        elif isinstance(module, nn.Linear):
-            xavier_uniform_(module.weight)
+        # elif isinstance(module, nn.Linear):
+        #     xavier_uniform_(module.weight)
     
     def _gather_indexes(self, output, gather_index):
         """Gathers the vectors at the spexific positions over a minibatch"""
@@ -52,8 +53,8 @@ class GRU4Rec(nn.Module):
         return output_tensor.squeeze(1)
 
     def forward(self, item_seq, item_seq_len):
-        if (item_seq >= self.n_items).sum()>0:
-            print(item_seq[item_seq >= self.n_items], self.n_items)
+        # if (item_seq >= self.n_items).sum()>0:
+        #     print(item_seq[item_seq >= self.n_items], self.n_items)
         item_seq_emb = self.item_embedding(item_seq)
         item_seq_emb_dropout = self.emb_dropout(item_seq_emb)
         gru_output, _ = self.gru_layers(item_seq_emb_dropout)
@@ -72,6 +73,9 @@ class GRU4Rec(nn.Module):
         logits = torch.matmul(seq_output, test_item_emb.transpose(0, 1))
         if not self.debiasing:
             loss = self.loss_fct(logits, pos_items)
+            # print(test_item_emb.size(), logits.size())
+            # # print(item_seq[:10], '\n', item_seq_len[:10], pos_items[:10])
+            # exit(0)
         else:
             NotImplementedError("Make sure debiasing == False!")
         return loss

@@ -137,10 +137,11 @@ class Trainer(AbstractTrainer):
         return interaction
 
     def _train_epoch(self, interaction, shuffle_data=True):
+        # print(interaction['num'])
+        # exit(0)
         if shuffle_data:
             # shuffle the data
-            order = np.arange(interaction['num'], dtype=int)
-            np.random.shuffle(order)
+            order = torch.randperm(interaction['num'])
             for key in ['seq', 'seq_len', 'target', 'ctr']:
                 value = interaction[key]
                 interaction[key] = value[order]
@@ -186,7 +187,8 @@ class Trainer(AbstractTrainer):
                 results = self.evaluate()
                 print("epoch %d, time-consumin: %f s, train-loss: %f, \nresults on validset: %s" % (epoch_idx+1, time()-start, train_loss, str(results)))
                 start = time()
-                
+
+    @torch.no_grad()      
     def _eval_epoch(self, interaction):
         seq_list = interaction['seq']
         seq_len = interaction['seq_len']
