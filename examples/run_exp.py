@@ -10,6 +10,7 @@ import configparser
 from util.data import Dataset
 from offlineExp.gru4rec import GRU4Rec
 from trainer.trainer import Trainer
+from evaluator.evaluator import Evaluator
 
 # np.random.seed(2020)
 
@@ -63,7 +64,9 @@ def run_dqn():
     ## train process
     model = GRU4Rec(config, data)
     trainer = Trainer(config, model, data)
-    trainer.fit()
+    model = trainer.fit()
+    evaluator = Evaluator(config, model, data)
+    evaluator.evaluate()
     # evalProcess = conf['evaluation']
     # if evalProcess.lower() == 'false':
     #     train(conf, config, sofa)

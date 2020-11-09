@@ -25,6 +25,9 @@ class AbstractTrainer(object):
         self.learner = 'Adam'
         self.learning_rate = 1e-3
 
+        # 
+        self.best_valid_score = -1
+
     def fit(self):
         r"""Train the model based on the train data.
         """
@@ -181,12 +184,58 @@ class Trainer(AbstractTrainer):
         start = time()
         for epoch_idx in range(self.epochs):
             train_loss = self._train_epoch(interaction)
-            if (epoch_idx + 1) % 10 == 0: # evaluate on valid set
+            if (epoch_idx + 1) % 1 == 0: # evaluate on valid set
                 self.save_model(epoch_idx)
                 # self.load_model()
-                results = self.evaluate()
-                print("epoch %d, time-consumin: %f s, train-loss: %f, \nresults on validset: %s" % (epoch_idx+1, time()-start, train_loss, str(results)))
+                valid_results, valid_loss = self.evaluate()
+                print("epoch %d, time-consumin: %f s, train-loss: %f, valid-loss: %f, \nresults on validset: %s" % (epoch_idx+1, time()-start, train_loss, valid_loss, str(valid_results)))
+                self.best_valid_score, _, stop_flag, _ = self._early_stopping(valid_loss, self.best_valid_score, epoch_idx, 10, bigger=False)
+                # print(self.best_valid_score, stop_flag, valid_loss)
+                # exit(0)
+                if stop_flag:
+                    print("Finished training, best eval result in epoch %d" % epoch_idx)
+                    break
                 start = time()
+        return self.model
+
+    def _early_stopping(self, value, best, cur_step, max_step, bigger=True):
+        r""" validation-based early stopping
+        Args:
+            value (float): current result
+            best (float): best result
+            cur_step (int): the number of consecutive steps that did not exceed the best result
+            max_step (int): threshold steps for stopping
+            bigger (bool, optional): whether the bigger the better
+        Returns:
+            tuple:
+            - float, best result after this step
+            - int, the number of consecutive steps that did not exceed the best result after this step
+            - bool, whether to stop
+            - bool, whether to update
+        """
+        stop_flag = False
+        update_flag = False
+        if bigger:
+            if value > best:
+                cur_step = 0
+                best = value
+                update_flag = True
+            else:
+                cur_step += 1
+                if cur_step > max_step:
+                    stop_flag = True
+        else:
+            if value < best:
+                cur_step = 0
+                best = value
+                update_flag = True
+            else:
+                cur_step += 1
+                if cur_step > max_step:
+                    stop_flag = True
+        return best, cur_step, stop_flag, update_flag
+
+
 
     @torch.no_grad()      
     def _eval_epoch(self, interaction):
@@ -231,16 +280,18 @@ class Trainer(AbstractTrainer):
         self.model.load_state_dict(checkpoint['net'])
         self.optimizer.load_state_dict(checkpoint['optimizer'])
 
-
     def evaluate(self):
         interaction = self._data_pre_fullseq(self.data.train_full)
+        # losses
+        losses = self.model.calculate_loss(interaction).item()
+        # results
         scores = self.model.full_sort_predict(interaction)
         # find the position of the target item
         targets = interaction['target']
         target_scores = torch.gather(scores, 1, targets.view(-1, 1)) # [B 1]
         target_pos = (scores >= target_scores).sum(-1) # [B]
         results = calculate_metrics(target_pos.cpu().numpy())
-        return results
+        return results, losses
         
 
 
