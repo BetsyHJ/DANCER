@@ -30,7 +30,10 @@ class GRU4Rec(nn.Module):
         )
         self.dense = nn.Linear(self.hidden_size, self.embedding_size)
         if self.loss_type.upper() == 'CE':
-            self.loss_fct = nn.CrossEntropyLoss()
+            if self.debiasing:
+                self.loss_fct = nn.CrossEntropyLoss(reduction='none')
+            else:
+                self.loss_fct = nn.CrossEntropyLoss()
         else:
             raise NotImplementedError("Make sure 'loss_type' in ['CE']!")
 
@@ -71,13 +74,10 @@ class GRU4Rec(nn.Module):
         # self.loss_type = 'CE'
         test_item_emb = self.item_embedding.weight
         logits = torch.matmul(seq_output, test_item_emb.transpose(0, 1))
-        if not self.debiasing:
-            loss = self.loss_fct(logits, pos_items)
-            # print(test_item_emb.size(), logits.size())
-            # # print(item_seq[:10], '\n', item_seq_len[:10], pos_items[:10])
-            # exit(0)
-        else:
-            NotImplementedError("Make sure debiasing == False!")
+        loss = self.loss_fct(logits, pos_items)
+        if self.debiasing:
+            ctr = interaction['ctr'] # [B]
+            loss = torch.mul(loss, ctr).sum() # [B] -> [1]
         return loss
 
     def predict(self, interaction):

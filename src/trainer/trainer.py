@@ -26,7 +26,7 @@ class AbstractTrainer(object):
         self.learning_rate = float(config['learning_rate'])
 
         # 
-        self.best_valid_score = -1
+        self.best_valid_score = None
 
     def fit(self):
         r"""Train the model based on the train data.
@@ -96,7 +96,7 @@ class Trainer(AbstractTrainer):
         seq_list = torch.from_numpy(np.array(seq_list, dtype=int)).to(self.device)
         seq_len = torch.from_numpy(np.array(seq_len, dtype=int)).to(self.device)
         target = torch.from_numpy(np.array(target, dtype=int)).to(self.device)
-        ctr_target = torch.from_numpy(np.array(ctr_target, dtype=int)).to(self.device)
+        ctr_target = torch.from_numpy(np.array(ctr_target, dtype=float)).to(self.device)
         interaction = {}
         interaction['seq'] = seq_list
         interaction['seq_len'] = seq_len
@@ -113,8 +113,10 @@ class Trainer(AbstractTrainer):
         for u, group in train.groupby(['UserId']):
             u_ratings = group.sort_values(['timestamp'], ascending=True)
             u_items = u_ratings['ItemId'].values
+            u_ctrs = u_ratings['ctr'].values
             u_n_items = len(u_items) - 1
             target.append(u_items[-1])
+            ctr_target.append(u_ctrs[-1])
             u_items = u_items[:-1]
             uid_list.append(u)
             if u_n_items >= self.max_item_list_len:
@@ -129,12 +131,12 @@ class Trainer(AbstractTrainer):
         seq_list = torch.from_numpy(np.array(seq_list, dtype=int)).to(self.device)
         seq_len = torch.from_numpy(np.array(seq_len, dtype=int)).to(self.device)
         target = torch.from_numpy(np.array(target, dtype=int)).to(self.device)
-        # ctr_target = torch.from_numpy(np.array(ctr_target, dtype=int)).to(self.device)
+        ctr_target = torch.from_numpy(np.array(ctr_target, dtype=float)).to(self.device)
         interaction = {}
         interaction['seq'] = seq_list
         interaction['seq_len'] = seq_len
         interaction['target'] = target
-        # interaction['ctr'] = ctr_target
+        interaction['ctr'] = ctr_target
         assert seq_list.size()[0] == seq_len.size()[0]
         interaction['num'] = seq_list.size()[0]
         return interaction
@@ -215,6 +217,11 @@ class Trainer(AbstractTrainer):
         """
         stop_flag = False
         update_flag = False
+        if best is None:
+            cur_step = 0
+            best = value
+            update_flag = True
+            return best, cur_step, stop_flag, update_flag
         if bigger:
             if value > best:
                 cur_step = 0

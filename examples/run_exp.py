@@ -25,10 +25,10 @@ def _logging_(basis_conf, params_conf):
     now = localtime(time())
     now = strftime("%Y-%m-%d %H:%M:%S", now)
     origin_data_name = basis_conf["data.input.dataset"]
-    debiasing = basis_conf["data.debiasing"]
-    print(now + " - data:%s" % origin_data_name)
-    print(now + " - debiasing:%s" % (debiasing))
+    debiasing = basis_conf["debiasing"]
+    print(now + " - data: %s" % origin_data_name)
     print(now + " - model: %s" % (basis_conf['mode']))
+    print(now + " - debiasing: %s" % (debiasing))
     # print(now + " - use gpu: %s" % (basis_conf['use_gpu']))
     print("conf : " + str(params_conf))
 
@@ -59,13 +59,17 @@ def run_dqn():
     # add some fixed parameters
     config['dataset'] = conf['data.input.dataset']
     config['epochs'] = 100
+    if conf['debiasing'].lower() == 'ips':
+        config['debiasing'] = True
+    else:
+        config['debiasing'] = False
 
     ## loading data
     data = Dataset(conf)
     ctr = data.train['ctr']
 
     ## train process
-    model = GRU4Rec(config, data)
+    model = GRU4Rec(config, data, debiasing=config['debiasing'])
     trainer = Trainer(config, model, data)
     model = trainer.fit()
     ## evaluate process
