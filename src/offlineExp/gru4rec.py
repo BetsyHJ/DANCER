@@ -11,11 +11,11 @@ class GRU4Rec(nn.Module):
         self.embedding_size = int(config['embedding_size'])
         self.hidden_size = int(config['hidden_size'])
         self.loss_type = config['loss_type']
-        self.lr_decay_step = int(config['lr_decay_step'])
+        # self.lr_decay_step = int(config['lr_decay_step'])
         self.batch_size = int(config['batch_size'])
-        self.num_layers = 1
+        self.num_layers = int(config['num_layers'])
         self.n_items = data.n_items # one for padding
-        self.dropout_prob = 0.1
+        self.dropout_prob = float(config['dropout_prob'])
 
         # define layers and loss
         self.item_embedding = nn.Embedding(self.n_items+1, self.embedding_size, padding_idx=self.n_items)

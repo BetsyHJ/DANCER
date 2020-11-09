@@ -22,8 +22,8 @@ class AbstractTrainer(object):
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.model = model.to(self.device)
         self.data = data
-        self.learner = 'Adam'
-        self.learning_rate = 1e-3
+        self.learner = config['optimizer']
+        self.learning_rate = float(config['learning_rate'])
 
         # 
         self.best_valid_score = -1
@@ -45,10 +45,10 @@ class Trainer(AbstractTrainer):
         super(Trainer, self).__init__(config, model, data)
 
         self.optimizer = config['optimizer']
-        self.saved_model_file = "./checkpoint_dir/ml-100k" # config['checkpoint_dir']
-        self.epochs = 100 # config['epochs']
-        self.batch_size = 512
-        self.max_item_list_len = 20 # config['max_item_list_len']
+        self.saved_model_file = "./checkpoint_dir/" + config['dataset'] # config['checkpoint_dir']
+        self.epochs = config['epochs']
+        self.batch_size = int(config['batch_size'])
+        self.max_item_list_len = int(config['max_item_list_len'])
 
         self.optimizer = self._build_optimizer()
 
@@ -185,7 +185,6 @@ class Trainer(AbstractTrainer):
         for epoch_idx in range(self.epochs):
             train_loss = self._train_epoch(interaction)
             if (epoch_idx + 1) % 1 == 0: # evaluate on valid set
-                self.save_model(epoch_idx)
                 # self.load_model()
                 valid_results, valid_loss = self.evaluate()
                 print("epoch %d, time-consumin: %f s, train-loss: %f, valid-loss: %f, \nresults on validset: %s" % (epoch_idx+1, time()-start, train_loss, valid_loss, str(valid_results)))
@@ -195,6 +194,7 @@ class Trainer(AbstractTrainer):
                 if stop_flag:
                     print("Finished training, best eval result in epoch %d" % epoch_idx)
                     break
+                self.save_model(epoch_idx)
                 start = time()
         return self.model
 

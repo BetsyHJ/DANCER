@@ -29,7 +29,7 @@ def _logging_(basis_conf, params_conf):
     print(now + " - data:%s" % origin_data_name)
     print(now + " - debiasing:%s" % (debiasing))
     print(now + " - model: %s" % (basis_conf['mode']))
-    print(now + " - use gpu: %s" % (basis_conf['usegpu']))
+    # print(now + " - use gpu: %s" % (basis_conf['use_gpu']))
     print("conf : " + str(params_conf))
 
 def run_dqn():
@@ -56,23 +56,22 @@ def run_dqn():
     # config['SAVE_MODEL_FILE'] = 'sim_random_' + str(num_users) + '_' + str(action_space) + '_' + config["state_encoder"] + '_'
 
     _logging_(conf, config)
-    
+    # add some fixed parameters
+    config['dataset'] = conf['data.input.dataset']
+    config['epochs'] = 100
+
+    ## loading data
     data = Dataset(conf)
     ctr = data.train['ctr']
-    print(max(ctr), min(ctr))
 
     ## train process
     model = GRU4Rec(config, data)
     trainer = Trainer(config, model, data)
     model = trainer.fit()
+    ## evaluate process
     evaluator = Evaluator(config, model, data)
     evaluator.evaluate()
-    # evalProcess = conf['evaluation']
-    # if evalProcess.lower() == 'false':
-    #     train(conf, config, sofa)
-    # else:
-    #     evaluate(conf, config, sofa)
-
+    
 
 def load_parameters(mode):
     params = {}
