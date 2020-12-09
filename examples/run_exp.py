@@ -9,8 +9,12 @@ import configparser
 
 from util.data import Dataset
 from offlineExp.gru4rec import GRU4Rec
-from trainer.trainer import Trainer
-from evaluator.evaluator import Evaluator
+from offlineExp.tmf import TMF
+from offlineExp.mf import MF
+# from trainer.trainer import TARS_Trainer as Trainer
+from trainer.trainer import OP_Trainer as Trainer
+
+from evaluator.evaluator import OP_Evaluator as Evaluator
 
 # np.random.seed(2020)
 
@@ -30,7 +34,10 @@ def _logging_(basis_conf, params_conf):
     print(now + " - model: %s" % (basis_conf['mode']))
     print(now + " - debiasing: %s" % (debiasing))
     # print(now + " - use gpu: %s" % (basis_conf['use_gpu']))
+    if ("evaluation" in basis_conf) and (basis_conf['evaluation'].lower() == 'true'):
+        print(now + " - directly load well-trained model and evaluate")
     print("conf : " + str(params_conf))
+    
 
 def run_dqn():
     conf = _get_conf('ml-100k')
@@ -67,14 +74,35 @@ def run_dqn():
     ## loading data
     data = Dataset(conf)
     ctr = data.train['ctr']
-
+    
+    if conf['mode'].lower() == "tmf":
+        MODEL = TMF
+    elif conf['mode'].lower() == "mf":
+        MODEL = MF
+    elif conf['mode'].lower() == "gru4rec":
+        MODEL = GRU4Rec
+    else:
+        NotImplementedError("Make sure 'mode' in ['GRU4Rec', 'TMF', 'MF']!")
     ## train process
-    model = GRU4Rec(config, data, debiasing=config['debiasing'])
+    config['mode'] = conf['mode']
+    model = MODEL(config, data, debiasing=config['debiasing'])
     trainer = Trainer(config, model, data)
-    model = trainer.fit()
-    ## evaluate process
+    if ("evaluation" in conf) and (conf['evaluation'].lower() == 'true'):
+        print("Directly load well-trained model and evaluate")
+        trainer.load_model()
+        print("saved params:", model.state_dict().keys())
+    else:
+        model = trainer.fit()
+
+    # evaluate process
+    model.eval()
     evaluator = Evaluator(config, model, data)
     evaluator.evaluate()
+    # evaluator.evaluate(ub='false')
+    # evaluator.evaluate(ub='snips')
+    # for thr in [1e-2, 1e-3, 1e-4]:
+    #     evaluator.evaluate(ub='pop', threshold=thr)
+    #     evaluator.evaluate(ub='unpop', threshold=thr)
     
 
 def load_parameters(mode):

@@ -76,14 +76,14 @@ class GRU4Rec(nn.Module):
         logits = torch.matmul(seq_output, test_item_emb.transpose(0, 1))
         loss = self.loss_fct(logits, pos_items)
         if self.debiasing:
-            ctr = interaction['ctr'] # [B]
+            ctr = torch.reciprocal(interaction['ctr']) # [B]
             loss = torch.mul(loss, ctr).sum() # [B] -> [1]
         return loss
 
     def predict(self, interaction):
-        item_seq = interaction[self.ITEM_SEQ]
-        item_seq_len = interaction[self.ITEM_SEQ_LEN]
-        test_item = interaction[self.ITEM_ID]
+        item_seq = interaction['seq']
+        item_seq_len = interaction['seq_len']
+        test_item = interaction['target']
         seq_output = self.forward(item_seq, item_seq_len)
         test_item_emb = self.item_embedding(test_item)
         scores = torch.mul(seq_output, test_item_emb).sum(dim=1)  # [B]
