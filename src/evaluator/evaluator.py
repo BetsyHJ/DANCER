@@ -56,7 +56,6 @@ def _mae(pred, true):
 def _acc(pred, true):
     pred = np.round(pred).astype(int)
     return (pred == true).mean()
-# def _perplexity()
 
 def cal_ratpred_metrics(score, target):
     results = {}
@@ -68,12 +67,15 @@ def cal_ratpred_metrics(score, target):
 def _nll(score, true):
     nll_score = true * np.log(score) + (1.0-true) * np.log(1-score) 
     return - nll_score.mean()
-
+def _perplexity(score, true):
+    nll_score = true * score * np.log2(score) + (1.0-true) * (1-score) * np.log2(1-score) 
+    return np.power(2, -(nll_score).mean())
 def cal_op_metrics(score, target):
     score = 1.0 / (1.0 + np.exp(-score)) # sigmoid(score)
     results = {}
     results['acc'] = _acc(score, target)
     results['nll'] = _nll(score, target)
+    results['ppl'] = _perplexity(score, target)
     return results
 
 class AbstractEvaluator(object):
@@ -227,12 +229,14 @@ class RatPred_Evaluator(AbstractEvaluator):
 class OP_Evaluator(AbstractEvaluator):
     def __init__(self, config, model, data):
         super(OP_Evaluator, self).__init__(config, model, data)
+        self.n_items = self.data.n_items
+        self.item_birthdate = torch.from_numpy(self.data._get_item_birthdate()).to(self.device)
     
     def _data_pre(self, test):
         uid_list = torch.from_numpy(np.array(test['UserId'].values, dtype=int)).to(self.device)
         iid_list = torch.from_numpy(np.array(test['ItemId'].values, dtype=int)).to(self.device)
         target = torch.ones_like(iid_list).to(self.device)
-        itemage = torch.from_numpy(np.array(test['ItemAge_month'].values, dtype=int)).to(self.device)
+        itemage = torch.from_numpy(np.array(test['ItemAge'].values, dtype=int)).to(self.device)
         timestamp = torch.from_numpy(np.array(test['timestamp'].values, dtype=int)).to(self.device)
 
         interaction = {}
@@ -244,10 +248,32 @@ class OP_Evaluator(AbstractEvaluator):
         interaction['num'] = uid_list.size()[0]
         return interaction
 
+    def _neg_sampling(self, interaction):
+        torch.manual_seed(517)
+        interaction_ = {}
+        users = interaction['user']
+        items = interaction['item']
+        targets = interaction['target']
+        timestamp = interaction['timestamp']
+        itemage = interaction['itemage']
+
+        # generate data for negs
+        interaction_['user'] = torch.cat((users, users), 0)
+        negs = torch.randint(self.n_items, size=(interaction['num'],)).to(self.device)
+        interaction_['item'] = torch.cat((items, negs), 0)
+        target_neg = (items == negs).int()
+        interaction_['target'] = torch.cat((targets, target_neg), 0)
+        itemage_neg = self.data.get_itemage(items, timestamp, self.item_birthdate)
+        # itemage_neg = ((timestamp - self.item_birthdate[items]) * 1.0 / (30*24*60*60)).int().clip(0, self.data.n_months - 1) # unit: month
+        interaction_['itemage'] = torch.cat((itemage, itemage_neg), 0)
+        interaction_['num'] = interaction['num'] * 2
+        return interaction_
+
     @torch.no_grad() 
     def evaluate(self, ub='false', threshold=1e-3):
         ''' ub: unbiased evaluator'''
-        interaction = self._data_pre(self.data.test)
+        interaction_pro = self._data_pre(self.data.test)
+        interaction = self._neg_sampling(interaction_pro)
         # results
         scores = self.model.predict(interaction)
         targets = interaction['target']

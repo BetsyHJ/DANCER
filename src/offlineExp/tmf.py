@@ -18,15 +18,15 @@ class TMF(nn.Module):
         # self.lr_decay_step = int(config['lr_decay_step'])
         self.batch_size = int(config['batch_size'])
         self.n_items = data.n_items 
-        self.n_months = data.n_months 
+        self.n_periods = data.n_periods 
         self.n_users = data.n_users
 
         # define layers and loss
         self.user_embedding = nn.Embedding(self.n_users, self.embedding_size)
         self.item_embedding = nn.Embedding(self.n_items, self.embedding_size)
-        self.item_Dyn_embedding = nn.Embedding(self.n_items * self.n_months, self.embedding_size)
+        self.item_Dyn_embedding = nn.Embedding(self.n_items * self.n_periods, self.embedding_size)
         # self.item_Dyn_embedding = [] # [T N D]
-        # for t in range(self.n_months):
+        # for t in range(self.n_periods):
         #     self.item_Dyn_embedding.append(nn.Embedding(self.n_items, self.embedding_size))
         
         if self.loss_type.upper() == 'CE':
@@ -61,7 +61,7 @@ class TMF(nn.Module):
         return output_tensor.squeeze(1)
 
     def get_item_embedding(self, item, itemage): # [B], [B]
-        idx = item * self.n_months + itemage
+        idx = item * self.n_periods + itemage
         return self.item_embedding(item) + self.item_Dyn_embedding(idx)
 
     def forward(self, user, item, itemage):
@@ -91,7 +91,7 @@ class TMF(nn.Module):
     def full_sort_predict(self, interaction):
         user = interaction['user']
         test_items_emb = self.item_embedding.weight.view(self.n_items, 1, self.embedding_size) + \
-                self.item_Dyn_embedding.weight.view(self.n_items, self.n_months, self.embedding_size) # [N D] + [N T D] -> [N T D]
-        test_items_emb = test_items_emb.view(self.n_items * self.n_months, self.embedding_size) #[N*T D]
+                self.item_Dyn_embedding.weight.view(self.n_items, self.n_periods, self.embedding_size) # [N D] + [N T D] -> [N T D]
+        test_items_emb = test_items_emb.view(self.n_items * self.n_periods, self.embedding_size) #[N*T D]
         scores = torch.matmul(self.user_embedding(user), test_items_emb.transpose(0, 1))  # [B D], [D N*T] -> [B N*T]
-        return scores.view(-1, self.n_items, self.n_months) # [B N T]
+        return scores.view(-1, self.n_items, self.n_periods) # [B N T]

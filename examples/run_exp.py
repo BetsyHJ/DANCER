@@ -11,6 +11,7 @@ from util.data import Dataset
 from offlineExp.gru4rec import GRU4Rec
 from offlineExp.tmf import TMF
 from offlineExp.mf import MF
+from offlineExp.tf import TF
 # from trainer.trainer import TARS_Trainer as Trainer
 from trainer.trainer import OP_Trainer as Trainer
 
@@ -73,10 +74,12 @@ def run_dqn():
 
     ## loading data
     data = Dataset(conf)
-    ctr = data.train['ctr']
+    # ctr = data.train['ctr']
     
     if conf['mode'].lower() == "tmf":
         MODEL = TMF
+    elif conf['mode'].lower() == "tf":
+        MODEL = TF
     elif conf['mode'].lower() == "mf":
         MODEL = MF
     elif conf['mode'].lower() == "gru4rec":

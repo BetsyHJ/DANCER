@@ -124,7 +124,7 @@ class TARS_Trainer(AbstractTrainer):
         uid_list = torch.from_numpy(np.array(train['UserId'].values, dtype=int)).to(self.device)
         iid_list = torch.from_numpy(np.array(train['ItemId'].values, dtype=int)).to(self.device)
         target = torch.from_numpy(np.array(train['rating'].values, dtype=float)).to(self.device)
-        itemage = torch.from_numpy(np.array(train['ItemAge_month'].values, dtype=int)).to(self.device)
+        itemage = torch.from_numpy(np.array(train['ItemAge'].values, dtype=int)).to(self.device)
         ctr = torch.from_numpy(np.array(train['ctr'].values, dtype=float)).to(self.device)
         
         interaction = {}
@@ -463,7 +463,7 @@ class OP_Trainer(AbstractTrainer):
         super(OP_Trainer, self).__init__(config, model, data)
 
         self.optimizer = config['optimizer']
-        self.saved_model_file = "./checkpoint_dir/" + config['dataset'] + '_ObPred'
+        self.saved_model_file = "./checkpoint_dir/" + config['dataset'] + '_' + config['mode'] + '_ObsPred'
         print("model will be saved into:", self.saved_model_file)
         self.epochs = config['epochs']
         self.batch_size = int(config['batch_size'])
@@ -478,7 +478,7 @@ class OP_Trainer(AbstractTrainer):
         uid_list = torch.from_numpy(np.array(train['UserId'].values, dtype=int)).to(self.device)
         iid_list = torch.from_numpy(np.array(train['ItemId'].values, dtype=int)).to(self.device)
         target = torch.ones_like(iid_list).to(self.device)
-        itemage = torch.from_numpy(np.array(train['ItemAge_month'].values, dtype=int)).to(self.device)
+        itemage = torch.from_numpy(np.array(train['ItemAge'].values, dtype=int)).to(self.device)
         timestamp = torch.from_numpy(np.array(train['timestamp'].values, dtype=int)).to(self.device)
 
         interaction = {}
@@ -504,7 +504,8 @@ class OP_Trainer(AbstractTrainer):
         interaction_['item'] = torch.cat((items, negs), 0)
         target_neg = (items == negs).int()
         interaction_['target'] = torch.cat((targets, target_neg), 0)
-        itemage_neg = ((timestamp - self.item_birthdate[items]) * 1.0 / (30*24*60*60)).int().clip(0, self.data.n_months - 1) # unit: month
+        itemage_neg = self.data.get_itemage(items, timestamp, self.item_birthdate)
+        # itemage_neg = ((timestamp - self.item_birthdate[items]) * 1.0 / (30*24*60*60)).int().clip(0, self.data.n_months - 1) # unit: month
         interaction_['itemage'] = torch.cat((itemage, itemage_neg), 0)
         interaction_['num'] = interaction['num'] * 2
         return self._shuffle_date(interaction_)
@@ -613,7 +614,8 @@ class OP_Trainer(AbstractTrainer):
     
     @torch.no_grad()
     def evaluate(self):
-        interaction = self._data_pre(self.data.valid)
+        interaction_pos = self._data_pre(self.data.valid)
+        interaction = self._neg_sampling(interaction_pos)
         # losses
         losses = self.model.calculate_loss(interaction).item()
         # results
