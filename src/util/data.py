@@ -18,10 +18,16 @@ class Dataset(object):
         # get itemage
         self.item_birthdate = self._get_item_birthdate()
 
-        # self.period_type = 'year'
-        # self.n_periods = 10
-        self.period_type = 'month'
-        self.n_periods = 12
+        self.period_type = config['data.itemage.type'].lower()
+        if 'data.itemage.max' in config:
+            self.n_periods = int(config['data.itemage.max'])
+        if self.period_type == 'year':
+            if 'data.itemage.max' not in config:
+                self.n_periods = 20
+        elif self.period_type == 'month':
+            if 'data.itemage.max' not in config:
+                self.n_periods = 36
+                
         train_itemage = self.get_itemage(self.train_full['ItemId'], self.train_full['timestamp'])
         self.n_periods = min(self.n_periods-1, max(train_itemage)) + 1
         self.train_full['ItemAge'] = train_itemage
@@ -74,13 +80,15 @@ class Dataset(object):
         if unit == 'month':
             period_second *= 30
         elif unit == 'year':
-            period_second *= 30 * 356
+            period_second *= 356
         # self.period_second = period_second
         if item_birthdate is not None:
             item_pt = item_birthdate[items]
             itemage = ((timestamp - item_pt) * 1.0 / period_second).int().clip(0, max_period)
         else:
             item_pt = self.item_birthdate[items]
+            # print(((timestamp - item_pt) * 1.0 / period_second))
+            # exit(0)
             itemage = ((timestamp - item_pt) * 1.0 / period_second).astype(int).clip(0, max_period)
             assert len(itemage) == len(items)
         return itemage

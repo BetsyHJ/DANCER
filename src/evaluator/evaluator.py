@@ -71,7 +71,12 @@ def _perplexity(score, true):
     nll_score = true * score * np.log2(score) + (1.0-true) * (1-score) * np.log2(1-score) 
     return np.power(2, -(nll_score).mean())
 def cal_op_metrics(score, target):
+    # score_ = score.copy()
     score = 1.0 / (1.0 + np.exp(-score)) # sigmoid(score)
+    score = score.clip(0.0001, 0.9999)
+    # if (score == 1.0).sum() + (score == 0.0).sum() > 0:
+    #     print(score_[score == 1.0], score_[score==0.0])
+    #     exit(1)
     results = {}
     results['acc'] = _acc(score, target)
     results['nll'] = _nll(score, target)
@@ -170,29 +175,7 @@ class Evaluator(AbstractEvaluator):
         return results
     
     # def metrics_info(self, results):
-        
-class RatPred_Evaluator(AbstractEvaluator):
-    def __init__(self, config, model, data):
-        super(RatPred_Evaluator, self).__init__(config, model, data)
-
-    def _data_pre(self, test):
-        uid_list = torch.from_numpy(np.array(test['UserId'].values, dtype=int)).to(self.device)
-        iid_list = torch.from_numpy(np.array(test['ItemId'].values, dtype=int)).to(self.device)
-        target = torch.from_numpy(np.array(test['rating'].values, dtype=float)).to(self.device)
-        itemage = torch.from_numpy(np.array(test['ItemAge_month'].values, dtype=int)).to(self.device)
-        
-        interaction = {}
-        interaction['user'] = uid_list
-        interaction['item'] = iid_list
-        interaction['target'] = target
-        interaction['itemage'] = itemage
-
-        interaction['num'] = uid_list.size()[0]
-        return interaction
     
-    @torch.no_grad() 
-    def evaluate(self, ub='false', threshold=1e-3):
-        ''' ub: unbiased evaluator'''
 class RatPred_Evaluator(AbstractEvaluator):
     def __init__(self, config, model, data):
         super(RatPred_Evaluator, self).__init__(config, model, data)
@@ -230,8 +213,117 @@ class OP_Evaluator(AbstractEvaluator):
     def __init__(self, config, model, data):
         super(OP_Evaluator, self).__init__(config, model, data)
         self.n_items = self.data.n_items
+        self.n_users = self.data.n_users
         self.item_birthdate = torch.from_numpy(self.data._get_item_birthdate()).to(self.device)
+        
+        # get last timestamp of user in the system from the training set, and evaluate on the next one-month
+        self.user_lasttime_train = self._get_trainU_last()
+        self.test_user_pos = {} # filled when we call _data_pre_next_month()
+        self.period_type = self.data.period_type
+        if self.period_type == 'month':
+            self.period_s = 30 * 24 * 60 * 60
+        elif self.period_type == 'year':
+            self.period_s = 356 * 24 * 60 * 60
+
+    def _get_trainU_last(self):
+        train = self.data.train_full
+        user_lasttime_train = np.zeros(self.n_users)
+        for u, group in train.groupby(by=['UserId']):
+            lasttime = max(group['timestamp'])
+            user_lasttime_train[u] = lasttime
+        return user_lasttime_train
     
+    # only keep the next month/year interactions for every user as test set
+    def _filter_test_next_month(self):
+        test = self.data.test
+        user_lasttime_test = self.user_lasttime_train + self.period_s
+        lasttime_test = user_lasttime_test[test['UserId']]
+        n_test = len(test)
+        test = test[test['timestamp'] <= lasttime_test]
+        print("Filter %d interactions which do not happend in next month since last interaction in training, \
+            in total %d ratings observed in testset" % (n_test - len(test), len(test)))
+        return test
+
+    def _data_pre_next_month(self):
+        test = self._filter_test_next_month()
+        uid_list = torch.from_numpy(np.array(test['UserId'].values, dtype=int)).to(self.device)
+        iid_list = torch.from_numpy(np.array(test['ItemId'].values, dtype=int)).to(self.device)
+        target = torch.ones_like(iid_list).to(self.device)
+        itemage = torch.from_numpy(np.array(test['ItemAge'].values, dtype=int)).to(self.device)
+        timestamp = torch.from_numpy(np.array(test['timestamp'].values, dtype=int)).to(self.device)
+
+        interaction = {}
+        interaction['user'] = uid_list
+        interaction['item'] = iid_list
+        interaction['target'] = target
+        interaction['itemage'] = itemage
+        interaction['timestamp'] = timestamp
+        interaction['num'] = uid_list.size()[0]
+
+        for u, group in test.groupby(by=['UserId']):
+            self.test_user_pos[u] = group['ItemId'].values
+            
+        return interaction
+
+    def _neg_sampling_next_month(self, K=1, full_negs = True):
+        torch.manual_seed(517)
+
+        # filter the data and keep one-month interactions
+        test = self._filter_test_next_month()
+        
+        # period_s = 15 * 24 * 60 * 60 # for the negatives, we use the middle date of next one month/year (period) as timestamp
+        user_time_negs = self.user_lasttime_train + self.period_s / 2.0
+        # negatives
+        users, items = [], []
+        for u, group in test.groupby(by=['UserId']):
+            pos_items = group['ItemId'].values
+            neg_prob = np.random.uniform(0, 1, size=(self.n_items,))
+            neg_prob[pos_items] = -1.
+            # delete the items published after user last interaction in training set
+            neg_prob[self.data.item_birthdate >= self.user_lasttime_train[u]] = -1.
+            if full_negs:
+                neg_items = np.arange(self.n_items)[neg_prob >= 0.0]
+            else:
+                neg_items = np.argsort(neg_prob)[-len(pos_items) : ]
+            users.append(np.repeat(u, len(neg_items)))
+            items.append(neg_items)
+        users = np.concatenate(users, axis=0)
+        items = np.concatenate(items, axis=0)
+        timestamps = user_time_negs[users]
+        # print(timestamps.astype('datetime64[s]'))
+        # print(items)
+        # print(self.data.item_birthdate[items].astype('datetime64[s]'))
+        itemage_neg = self.data.get_itemage(items, timestamps)
+
+        # print("******** Fake test, using +5 month **********")
+        # itemage_neg = np.clip(itemage_neg+5, 0, self.data.n_periods - 1)
+        itemage = self.data.get_itemage(test['ItemId'].values, test['timestamp'].values)
+        # print(itemage)
+        # print(np.unique(itemage, return_counts=True))
+        # print(np.unique(itemage_neg, return_counts=True))
+        # exit(0)
+        assert len(users) == len(items)
+        assert len(users) == len(itemage_neg)
+
+        n_pos, n_neg = len(test), len(users)
+        print("#pos: %d, #neg: %d" % (n_pos, n_neg))
+        users = np.concatenate((test['UserId'].values, users)).astype(int)
+        uid_list = torch.from_numpy(users).to(self.device)
+        items = np.concatenate((test['ItemId'].values, items)).astype(int)
+        iid_list = torch.from_numpy(items).to(self.device)
+        target = torch.cat((torch.ones((n_pos, )), torch.zeros((n_neg, ))), axis=0).to(self.device)
+        itemage = self.data.get_itemage(test['ItemId'].values, test['timestamp'].values)
+        itemages = np.concatenate((itemage, itemage_neg), axis=0)
+        itemages = torch.from_numpy(itemages).to(self.device)
+
+        interaction = {}
+        interaction['user'] = uid_list
+        interaction['item'] = iid_list
+        interaction['target'] = target
+        interaction['itemage'] = itemages
+        interaction['num'] = n_pos + n_neg
+        return interaction
+
     def _data_pre(self, test):
         uid_list = torch.from_numpy(np.array(test['UserId'].values, dtype=int)).to(self.device)
         iid_list = torch.from_numpy(np.array(test['ItemId'].values, dtype=int)).to(self.device)
@@ -268,14 +360,68 @@ class OP_Evaluator(AbstractEvaluator):
         interaction_['itemage'] = torch.cat((itemage, itemage_neg), 0)
         interaction_['num'] = interaction['num'] * 2
         return interaction_
+    
+    def _neg_sampling_timebased(self, interaction):
+        
+        torch.manual_seed(517)
+        interaction_ = {}
+        users = interaction['user']
+        items = interaction['item']
+        targets = interaction['target']
+        timestamp = interaction['timestamp']
+        itemage = interaction['itemage']
 
+        # generate data for negs
+        interaction_['user'] = torch.cat((users, users), 0)
+        negs = torch.randint(self.n_items, size=(interaction['num'],)).to(self.device)
+        interaction_['item'] = torch.cat((items, negs), 0)
+        target_neg = (items == negs).int()
+        interaction_['target'] = torch.cat((targets, target_neg), 0)
+        itemage_neg = self.data.get_itemage(items, timestamp, self.item_birthdate)
+        # itemage_neg = ((timestamp - self.item_birthdate[items]) * 1.0 / (30*24*60*60)).int().clip(0, self.data.n_months - 1) # unit: month
+        interaction_['itemage'] = torch.cat((itemage, itemage_neg), 0)
+        interaction_['num'] = interaction['num'] * 2
+        return interaction_
+
+    def _data_random(self, num = 1000):
+        users = torch.randint(self.data.n_users, size=(num, )).to(self.device)
+        items = torch.randint(self.n_items, size=(num, )).to(self.device)
+        itemage =torch.randint(self.data.n_periods, size=(num, )).to(self.device)
+        target = torch.where(itemage >= 0.5 * self.data.n_periods, 0, 1).to(self.device)
+        return {'user':users, 'item':items, 'target':target, 'itemage':itemage, 'num':num}
+
+    @torch.no_grad()
+    def _eval_epoch(self, interaction, batch_size=512):
+        users = interaction['user']
+        items = interaction['item']
+        # targets = interaction['target']
+        itemages = interaction['itemage']
+        
+        scores = []
+        num_batch = int(np.ceil(interaction['num'] * 1.0 / batch_size))
+        for i_batch in range(num_batch):
+            start_idx = i_batch * batch_size
+            end_idx = (i_batch+1) * batch_size
+            score = self.model.predict({'user':users[start_idx:end_idx], \
+                'item':items[start_idx:end_idx], 'itemage':itemages[start_idx:end_idx]})
+            scores.append(score)
+        return torch.cat(scores, 0)
+        
     @torch.no_grad() 
     def evaluate(self, ub='false', threshold=1e-3):
-        ''' ub: unbiased evaluator'''
-        interaction_pro = self._data_pre(self.data.test)
-        interaction = self._neg_sampling(interaction_pro)
+        # ''' ub: unbiased evaluator'''
+        # interaction_pro = self._data_pre(self.data.test)
+        # interaction = interaction_pro
+        # interaction = self._neg_sampling(interaction_pro)
+        # # randomly generate the data to verify if time affects ?
+        # interaction = self._data_random()
+        
+        # evaluate on testset with the interactions happening among next one-month per user
+        interaction = self._neg_sampling_next_month()
+
         # results
-        scores = self.model.predict(interaction)
+        # scores = self.model.predict(interaction)
+        scores = self._eval_epoch(interaction)
         targets = interaction['target']
         results = cal_op_metrics(scores.cpu().numpy(), targets.cpu().numpy())
         print("results on testset: %s" % (str(results)))

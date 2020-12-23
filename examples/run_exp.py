@@ -10,6 +10,7 @@ import configparser
 from util.data import Dataset
 from offlineExp.gru4rec import GRU4Rec
 from offlineExp.tmf import TMF
+from offlineExp.tmf import TMF_fast
 from offlineExp.mf import MF
 from offlineExp.tf import TF
 # from trainer.trainer import TARS_Trainer as Trainer
@@ -78,6 +79,8 @@ def run_dqn():
     
     if conf['mode'].lower() == "tmf":
         MODEL = TMF
+    elif conf['mode'].lower() == "tmf_fast":
+        MODEL = TMF_fast
     elif conf['mode'].lower() == "tf":
         MODEL = TF
     elif conf['mode'].lower() == "mf":
@@ -85,7 +88,7 @@ def run_dqn():
     elif conf['mode'].lower() == "gru4rec":
         MODEL = GRU4Rec
     else:
-        NotImplementedError("Make sure 'mode' in ['GRU4Rec', 'TMF', 'MF']!")
+        NotImplementedError("Make sure 'mode' in ['GRU4Rec', 'TMF', 'TMF_fast', 'MF', 'TF']!")
     ## train process
     config['mode'] = conf['mode']
     model = MODEL(config, data, debiasing=config['debiasing'])

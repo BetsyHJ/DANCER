@@ -468,10 +468,27 @@ class OP_Trainer(AbstractTrainer):
         self.epochs = config['epochs']
         self.batch_size = int(config['batch_size'])
         self.n_items = self.data.n_items
+        self.n_periods = self.data.n_periods
 
         self.optimizer = self._build_optimizer()
         self.item_birthdate = torch.from_numpy(self.data._get_item_birthdate()).to(self.device)
-        
+        # if config['mode'].lower() in ['tmf','tf']:
+        #     self.ns_type = 'random'
+        # else:
+        #     self.ns_type = 'random'
+        if 'ns_type' not in config:
+            self.ns_type = 'random'
+        else:
+            self.ns_type = config['ns_type'].lower()
+        print("Training with Negative-Sampling: %s based" % self.ns_type)
+        if 'time' in self.ns_type:
+            self.time_offset = 1
+            print("*********** Training with time-based negative sampling (Assumption: after %d month the user lose attention)" % self.time_offset)
+
+        self.train_user_pos = {}
+        for u, group in self.data.train_full.groupby(by=['UserId']):
+            self.train_user_pos[u] = group['ItemId'].values
+
 
     def _data_pre(self, train_set):
         train = train_set
@@ -490,24 +507,99 @@ class OP_Trainer(AbstractTrainer):
         interaction['num'] = uid_list.size()[0]
         return interaction
 
-    def _neg_sampling(self, interaction):
-        interaction_ = {}
-        users = interaction['user']
-        items = interaction['item']
-        targets = interaction['target']
-        timestamp = interaction['timestamp']
-        itemage = interaction['itemage']
 
-        # generate data for negs
-        interaction_['user'] = torch.cat((users, users), 0)
-        negs = torch.randint(self.n_items, size=(interaction['num'],)).to(self.device)
-        interaction_['item'] = torch.cat((items, negs), 0)
-        target_neg = (items == negs).int()
-        interaction_['target'] = torch.cat((targets, target_neg), 0)
-        itemage_neg = self.data.get_itemage(items, timestamp, self.item_birthdate)
-        # itemage_neg = ((timestamp - self.item_birthdate[items]) * 1.0 / (30*24*60*60)).int().clip(0, self.data.n_months - 1) # unit: month
-        interaction_['itemage'] = torch.cat((itemage, itemage_neg), 0)
-        interaction_['num'] = interaction['num'] * 2
+    def _merge_interactions(self, inte1, inte2):
+        inte_ = {}
+        keys = list(set(inte1.keys()) & set(inte2.keys()))
+        for key in keys:
+            if key == 'num':
+                inte_[key] = inte1[key] + inte2[key]
+            else:
+                inte_[key] = torch.cat((inte1[key], inte2[key]), 0)
+        return inte_
+
+
+    def _neg_sampling_random(self, train_set):
+        interaction_neg = {}
+        users, items, itemages = [], [], []
+        for u, group in train_set.groupby(by=['UserId']):
+            pos_items = group['ItemId'].values
+            neg_prob = np.random.uniform(0, 1, size=(self.n_items,))
+            neg_prob[pos_items] = -1.
+            neg_items = np.argsort(neg_prob)[-len(pos_items) : ]
+            users.append(np.repeat(u, len(pos_items)))
+            items.append(neg_items)
+            itemages.append(group['ItemAge'].values) # simply operation
+        users = np.concatenate(users, axis=0).astype(int)
+        items = np.concatenate(items, axis=0).astype(int)
+        itemages = np.concatenate(itemages, axis=0).astype(int)
+        targets = np.repeat(0, len(users)).astype(float)
+        
+        interaction_neg['user'] = torch.from_numpy(users).to(self.device)
+        interaction_neg['item'] = torch.from_numpy(items).to(self.device)
+        interaction_neg['target'] = torch.from_numpy(targets).to(self.device)
+        interaction_neg['itemage'] = torch.from_numpy(itemages).to(self.device)
+        interaction_neg['num'] = len(users)
+        return interaction_neg
+
+    def _neg_sampling_time(self, interaction, bigger=True):
+        # simply add itemage
+        interaction_neg = {}
+        interaction_neg['user'] = interaction['user']
+        interaction_neg['item'] = interaction['item']
+        num = interaction['num']
+        interaction_neg['num'] = num
+        itemage = interaction['itemage']
+        itemage_neg = (itemage + torch.randint(self.time_offset, self.data.n_periods, size=(num, )).to(self.device)).clip(0, self.data.n_periods-1)
+        interaction_neg['target'] = (itemage == itemage_neg).int()
+        interaction_neg['itemage'] = itemage_neg
+        return interaction_neg
+        
+
+    def _neg_sampling(self, interaction, train_set):
+        ns_type = self.ns_type
+        # interaction_ = {}
+        # users = interaction['user']
+        # items = interaction['item']
+        # targets = interaction['target']
+        # timestamp = interaction['timestamp']
+        # itemage = interaction['itemage']
+
+        if ns_type == 'random':
+            # # generate data for negs
+            # interaction_['user'] = torch.cat((users, users), 0)
+            # negs = torch.randint(self.n_items, size=(interaction['num'],)).to(self.device)
+            # interaction_['item'] = torch.cat((items, negs), 0)
+            # target_neg = (items == negs).int()
+            # interaction_['target'] = torch.cat((targets, target_neg), 0)
+            # itemage_neg = self.data.get_itemage(items, timestamp, self.item_birthdate)
+            # # itemage_neg = ((timestamp - self.item_birthdate[items]) * 1.0 / (30*24*60*60)).int().clip(0, self.data.n_months - 1) # unit: month
+            # interaction_['itemage'] = torch.cat((itemage, itemage_neg), 0)
+            # interaction_['num'] = interaction['num'] * 2
+            interaction_neg = self._neg_sampling_random(train_set)
+            interaction_ = self._merge_interactions(interaction, interaction_neg)
+        elif ns_type == 'time':
+            # (u, i, ia) -> 1 as pos, then (u, i-, ia) & (u, i, ia+) as neg
+            interaction_neg1 = self._neg_sampling_random(train_set)
+            interaction_neg2 = self._neg_sampling_time(interaction)
+            interaction_ = self._merge_interactions(interaction, interaction_neg1)
+            interaction_ = self._merge_interactions(interaction_, interaction)
+            interaction_ = self._merge_interactions(interaction_, interaction_neg2)
+        elif ns_type == 'time-only':
+            # # (u,i,t) -> 1, (u,i,t+) -> 0
+            # interaction_['user'] = torch.cat((users, users), 0)
+            # interaction_['item'] = torch.cat((items, items), 0)
+            # num = interaction['num'] 
+            # itemage_neg = (itemage + torch.randint(1, self.data.n_periods, size=(num, )).to(self.device)).clip(0, self.data.n_periods-1)
+            # target_neg = (itemage == itemage_neg).int()
+            # # target_neg = torch.zeros_like(targets).to(self.device)
+            # interaction_['target'] = torch.cat((targets, target_neg), 0)
+            # interaction_['itemage'] = torch.cat((itemage, itemage_neg), 0)
+            # interaction_['num'] = num * 2
+            interaction_neg = self._neg_sampling_time(interaction)
+            interaction_ = self._merge_interactions(interaction, interaction_neg)
+        else:
+            raise NotImplementedError('[ns_type] should be implemented.')
         return self._shuffle_date(interaction_)
 
 
@@ -520,7 +612,7 @@ class OP_Trainer(AbstractTrainer):
         itemage = interaction['itemage']
         
         # batch split
-        num_batch = math.ceil(interaction['num'] * 1.0 / self.batch_size)
+        num_batch = int(np.ceil(interaction['num'] * 1.0 / self.batch_size))
         start_idxs, end_idxs = [], []
         for i_batch in range(num_batch - 1):
             start_idxs.append(i_batch * self.batch_size)
@@ -556,7 +648,7 @@ class OP_Trainer(AbstractTrainer):
         start = time()
         for epoch_idx in range(self.epochs):
             if (epoch_idx == 0) or (resampling):
-                interaction = self._neg_sampling(interaction_pos) 
+                interaction = self._neg_sampling(interaction_pos, self.data.train) 
             train_loss = self._train_epoch(interaction)
             if (epoch_idx + 1) % 1 == 0: # evaluate on valid set
                 # self.load_model()
@@ -615,7 +707,7 @@ class OP_Trainer(AbstractTrainer):
     @torch.no_grad()
     def evaluate(self):
         interaction_pos = self._data_pre(self.data.valid)
-        interaction = self._neg_sampling(interaction_pos)
+        interaction = self._neg_sampling(interaction_pos, self.data.valid)
         # losses
         losses = self.model.calculate_loss(interaction).item()
         # results
