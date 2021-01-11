@@ -515,21 +515,28 @@ class OP_Trainer(AbstractTrainer):
             if key == 'num':
                 inte_[key] = inte1[key] + inte2[key]
             else:
-                inte_[key] = torch.cat((inte1[key], inte2[key]), 0)
+                try:
+                    inte_[key] = torch.cat((inte1[key], inte2[key]), 0)
+                except:
+                    print(key)
+                    exit(1)
         return inte_
 
 
-    def _neg_sampling_random(self, train_set):
+    def _neg_sampling_random(self, train_set, full_negs = False):
         interaction_neg = {}
         users, items, itemages = [], [], []
         for u, group in train_set.groupby(by=['UserId']):
             pos_items = group['ItemId'].values
             neg_prob = np.random.uniform(0, 1, size=(self.n_items,))
             neg_prob[pos_items] = -1.
-            neg_items = np.argsort(neg_prob)[-len(pos_items) : ]
-            users.append(np.repeat(u, len(pos_items)))
+            if full_negs:
+                neg_items = np.arange(self.n_items)[neg_prob >= 0.0]
+            else:
+                neg_items = np.argsort(neg_prob)[-len(pos_items) : ]
+            users.append(np.repeat(u, len(neg_items)))
             items.append(neg_items)
-            itemages.append(group['ItemAge'].values) # simply operation
+            itemages.append(np.random.randint(self.n_periods, size=neg_items.shape)) # randomly generate the itemage
         users = np.concatenate(users, axis=0).astype(int)
         items = np.concatenate(items, axis=0).astype(int)
         itemages = np.concatenate(itemages, axis=0).astype(int)
@@ -542,17 +549,33 @@ class OP_Trainer(AbstractTrainer):
         interaction_neg['num'] = len(users)
         return interaction_neg
 
-    def _neg_sampling_time(self, interaction, bigger=True):
-        # simply add itemage
-        interaction_neg = {}
-        interaction_neg['user'] = interaction['user']
-        interaction_neg['item'] = interaction['item']
+    def _neg_sampling_time(self, interaction, full_negs=False, bigger=True):
+        users = interaction['user']
+        items = interaction['item']
         num = interaction['num']
-        interaction_neg['num'] = num
-        itemage = interaction['itemage']
-        itemage_neg = (itemage + torch.randint(self.time_offset, self.data.n_periods, size=(num, )).to(self.device)).clip(0, self.data.n_periods-1)
-        interaction_neg['target'] = (itemage == itemage_neg).int()
-        interaction_neg['itemage'] = itemage_neg
+        itemages = interaction['itemage']
+        
+        interaction_neg = {}
+        if full_negs:
+            ui_ia = torch.zeros((num, self.n_periods), dtype=int)
+            ui_ia[range(num), itemages] = 1
+            id1, id2 = torch.where(ui_ia == 0)
+            users_neg = users[id1]
+            items_neg = items[id1]
+            itemages_neg = id2.to(self.device)
+            targets_neg = torch.zeros_like(id2, dtype=float).to(self.device)
+        else:
+            # simply add itemage
+            users_neg = users
+            items_neg = items
+            itemages_neg = (itemage + torch.randint(self.time_offset, self.data.n_periods, size=(num, )).to(self.device)).clip(0, self.data.n_periods-1)
+            targets_neg = (itemages == itemages_neg).int()
+
+        interaction_neg['num'] = len(users_neg)
+        interaction_neg['user'] = users_neg
+        interaction_neg['item'] = items_neg
+        interaction_neg['target'] = targets_neg
+        interaction_neg['itemage'] = itemages_neg
         return interaction_neg
         
 
@@ -576,12 +599,12 @@ class OP_Trainer(AbstractTrainer):
             # # itemage_neg = ((timestamp - self.item_birthdate[items]) * 1.0 / (30*24*60*60)).int().clip(0, self.data.n_months - 1) # unit: month
             # interaction_['itemage'] = torch.cat((itemage, itemage_neg), 0)
             # interaction_['num'] = interaction['num'] * 2
-            interaction_neg = self._neg_sampling_random(train_set)
+            interaction_neg = self._neg_sampling_random(train_set, full_negs=True)
             interaction_ = self._merge_interactions(interaction, interaction_neg)
         elif ns_type == 'time':
             # (u, i, ia) -> 1 as pos, then (u, i-, ia) & (u, i, ia+) as neg
-            interaction_neg1 = self._neg_sampling_random(train_set)
-            interaction_neg2 = self._neg_sampling_time(interaction)
+            interaction_neg1 = self._neg_sampling_random(train_set, full_negs=True)
+            interaction_neg2 = self._neg_sampling_time(interaction, full_negs=True)
             interaction_ = self._merge_interactions(interaction, interaction_neg1)
             interaction_ = self._merge_interactions(interaction_, interaction)
             interaction_ = self._merge_interactions(interaction_, interaction_neg2)
@@ -596,10 +619,11 @@ class OP_Trainer(AbstractTrainer):
             # interaction_['target'] = torch.cat((targets, target_neg), 0)
             # interaction_['itemage'] = torch.cat((itemage, itemage_neg), 0)
             # interaction_['num'] = num * 2
-            interaction_neg = self._neg_sampling_time(interaction)
+            interaction_neg = self._neg_sampling_time(interaction, full_negs=True)
             interaction_ = self._merge_interactions(interaction, interaction_neg)
         else:
             raise NotImplementedError('[ns_type] should be implemented.')
+        print("#pos: %d, #neg: %d" % (interaction['num'], interaction_['num'] - interaction['num']))
         return self._shuffle_date(interaction_)
 
 
@@ -654,7 +678,7 @@ class OP_Trainer(AbstractTrainer):
                 # self.load_model()
                 valid_results, valid_loss = self.evaluate()
                 print("epoch %d, time-consumin: %f s, train-loss: %f, valid-loss: %f, \nresults on validset: %s" % (epoch_idx+1, time()-start, train_loss, valid_loss, str(valid_results)))
-                self.best_valid_score, _, stop_flag, _ = self._early_stopping(valid_loss, self.best_valid_score, epoch_idx, 10, bigger=False)
+                self.best_valid_score, _, stop_flag, _ = self._early_stopping(valid_loss, self.best_valid_score, epoch_idx, 1, bigger=False)
                 # print(self.best_valid_score, stop_flag, valid_loss)
                 # exit(0)
                 if stop_flag:
@@ -684,16 +708,16 @@ class OP_Trainer(AbstractTrainer):
 
         # eval on batch
         total_loss = 0
-
+        scores = []
         for i_batch in range(len(start_idxs)):
             start_idx, end_idx = start_idxs[i_batch], end_idxs[i_batch]
-            self.optimizer.zero_grad()
-            losses = self.model.calculate_loss({'user': user[start_idx:end_idx], \
-                'item': item[start_idx:end_idx], 'itemage':itemage[start_idx:end_idx]})
+            interaction_batch = {'user': user[start_idx:end_idx], 'item': item[start_idx:end_idx], \
+                'itemage':itemage[start_idx:end_idx], 'target':target[start_idx:end_idx]}
+            losses = self.model.calculate_loss(interaction_batch)
+            scores.append(self.model.predict(interaction_batch))
             total_loss += losses.item()
-            losses.backward()
-            self.optimizer.step()
-        return total_loss
+        scores = torch.cat(scores, 0)
+        return total_loss, scores
 
     def save_model(self, epoch):
         state = {'net': self.model.state_dict(), 'optimizer':self.optimizer.state_dict(), 'epoch':epoch}
@@ -708,10 +732,11 @@ class OP_Trainer(AbstractTrainer):
     def evaluate(self):
         interaction_pos = self._data_pre(self.data.valid)
         interaction = self._neg_sampling(interaction_pos, self.data.valid)
-        # losses
-        losses = self.model.calculate_loss(interaction).item()
-        # results
-        scores = self.model.predict(interaction)
+        # # losses and results
+        # losses = self.model.calculate_loss(interaction).item()
+        # scores = self.model.predict(interaction)
+        losses, scores = self._eval_epoch(interaction)
+
         # find the position of the target item
         targets = interaction['target']
         results = cal_op_metrics(scores.cpu().numpy(), targets.cpu().numpy())

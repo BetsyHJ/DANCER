@@ -1,4 +1,5 @@
 import numpy as np
+import pandas as pd
 import torch
 
 # metric definition
@@ -10,6 +11,7 @@ def mrr_(target_pos, K):
     mrr = np.where(target_pos <= K, mrr, 0.0)
     return mrr
 def ndcg_(target_pos, K):
+    # for only one correct example, (1 / log2(posi+1)) / (1 / log2(1+1)) = log2(2) / log2(posi+1)
     result = np.log(2.) / np.log(1.0 + target_pos)
     result = np.where(target_pos <= K, result, 0.0)
     return result
@@ -69,11 +71,13 @@ def _nll(score, true):
     return - nll_score.mean()
 def _perplexity(score, true):
     nll_score = true * score * np.log2(score) + (1.0-true) * (1-score) * np.log2(1-score) 
-    return np.power(2, -(nll_score).mean())
-def cal_op_metrics(score, target):
+    # nll_score = true * np.log2(score) + (1.0-true) * np.log2(1.0-score)
+    return np.power(2, -nll_score.mean())
+def cal_op_metrics(score, target, w_sigmoid=True):
     # score_ = score.copy()
-    score = 1.0 / (1.0 + np.exp(-score)) # sigmoid(score)
-    score = score.clip(0.0001, 0.9999)
+    if w_sigmoid:
+        score = 1.0 / (1.0 + np.exp(-score)) # sigmoid(score)
+    score = score.clip(0.000001, 0.999999)
     # if (score == 1.0).sum() + (score == 0.0).sum() > 0:
     #     print(score_[score == 1.0], score_[score==0.0])
     #     exit(1)
@@ -224,6 +228,8 @@ class OP_Evaluator(AbstractEvaluator):
             self.period_s = 30 * 24 * 60 * 60
         elif self.period_type == 'year':
             self.period_s = 356 * 24 * 60 * 60
+        torch.manual_seed(517)
+        np.random.seed(517)
 
     def _get_trainU_last(self):
         train = self.data.train_full
@@ -266,8 +272,6 @@ class OP_Evaluator(AbstractEvaluator):
         return interaction
 
     def _neg_sampling_next_month(self, K=1, full_negs = True):
-        torch.manual_seed(517)
-
         # filter the data and keep one-month interactions
         test = self._filter_test_next_month()
         
@@ -324,6 +328,13 @@ class OP_Evaluator(AbstractEvaluator):
         interaction['num'] = n_pos + n_neg
         return interaction
 
+    # def _data_pre_next_month_for_ranking(self, K=1):
+    #     ''' 
+    #     Since too many 0s in the ob prediction task, we change it to be a ranking task
+    #     _neg_sampling_next_month can implement it, but too complex
+    #     '''
+
+
     def _data_pre(self, test):
         uid_list = torch.from_numpy(np.array(test['UserId'].values, dtype=int)).to(self.device)
         iid_list = torch.from_numpy(np.array(test['ItemId'].values, dtype=int)).to(self.device)
@@ -341,7 +352,6 @@ class OP_Evaluator(AbstractEvaluator):
         return interaction
 
     def _neg_sampling(self, interaction):
-        torch.manual_seed(517)
         interaction_ = {}
         users = interaction['user']
         items = interaction['item']
@@ -362,8 +372,6 @@ class OP_Evaluator(AbstractEvaluator):
         return interaction_
     
     def _neg_sampling_timebased(self, interaction):
-        
-        torch.manual_seed(517)
         interaction_ = {}
         users = interaction['user']
         items = interaction['item']
@@ -417,15 +425,85 @@ class OP_Evaluator(AbstractEvaluator):
         # interaction = self._data_random()
         
         # evaluate on testset with the interactions happening among next one-month per user
-        interaction = self._neg_sampling_next_month()
-
+        interaction = self._neg_sampling_next_month(full_negs=True)
+        # self._save_something(interaction)
+        
         # results
-        # scores = self.model.predict(interaction)
+        w_sigmoid = True
         scores = self._eval_epoch(interaction)
+        print("The chance to generate 1 is %.6f" % ((scores>0).sum()*1.0 / len(scores)))
+        # targets = interaction['target']
+        # scores = torch.zeros_like(targets).float().to(self.device) #+ targets.mean()
+        # w_sigmoid = False
+        # print("!!! Note we want to know what happened if we give all the predicted scores %.6f" % (scores[0].cpu()))
+        
+        # print("the max score of the probability is ", torch.max(scores))
+        # # evaluate it as a prediction task, but too many 0s
         targets = interaction['target']
-        results = cal_op_metrics(scores.cpu().numpy(), targets.cpu().numpy())
+        results = cal_op_metrics(scores.cpu().numpy(), targets.cpu().numpy(), w_sigmoid=w_sigmoid)
+        print(results)
+        # evaluate it as a ranking task
+        results = cal_ob_pred2ranking_metrics(interaction, scores)
         print("results on testset: %s" % (str(results)))
         return results
     
-    # def metrics_info(self, results):
+    def _save_something(self, interaction):
+        targets = interaction['target'].cpu().numpy()
+        itemages = interaction['itemage'].cpu().numpy()
+        df = pd.DataFrame(data={'target':targets, 'itemage':itemages})
+        df.to_csv('itemage_obLabels.csv', index=False)
         
+    # def metrics_info(self, results):
+
+def cal_ob_pred2ranking_metrics(interaction, scores, K=10):
+    users, items = interaction['user'].cpu().numpy(), interaction['item'].cpu().numpy()
+    targets = interaction['target'].cpu().numpy()
+    scores = scores.cpu().numpy()
+    df = pd.DataFrame(data = {'user': users, 'item':items, 'target':targets, 'score':scores})
+    Prec, Recall, MRR, MAP, NDCG = [], [], [], [], []
+    for u, group in df.groupby(['user']):
+        # for now poss before the negs, so we need shuffle first
+        shuffle_order = np.random.permutation(len(group))
+        group_shuffled = group.iloc[shuffle_order]
+        group_sorted = group_shuffled.sort_values(by=['score'], ascending=False)
+        '''NDCG...MAP...'''
+        preds = group_sorted['target'][:K]
+        Prec.append(preds.sum() * 1.0 / len(preds))
+        Recall.append(preds.sum() * 1.0 / group_sorted['target'].sum())
+        MRR.append(mrrs_(preds))
+        MAP.append(maps_(preds))
+        NDCG.append(ndcgs_(preds))
+    results = {}
+    results['Prec@%d'%K] = (np.array(Prec)).mean()
+    results['Recall@%d'%K] = (np.array(Recall)).mean()
+    results['MRR@%d'%K] = (np.array(MRR)).mean()
+    results['MAP@%d'%K] = (np.array(MAP)).mean()
+    results['NDCG@%d'%K] = (np.array(NDCG)).mean()
+    return results
+
+
+# preds: [0 1 0 1] the targets sorted by predicted scores
+
+def mrrs_(preds):
+    if preds.sum() == 0:
+        return 0.0
+    position = np.where(preds>0)[0][0] + 1
+    return 1.0 / position
+
+def maps_(preds):
+    if preds.sum() == 0:
+        return 0.0
+    positions = np.where(preds>0)[0]
+    MAP = np.reciprocal(positions.astype(float)+1).sum() / len(preds)
+    return MAP
+
+# denominator
+def ndcgs_(preds, denominator=None):
+    if preds.sum() == 0:
+        return 0.0
+    if denominator is None:
+        denominator = np.log2(np.arange(len(preds)).astype(float)+2) # i=2,...,k+1
+    dcgs = ((np.power(2, preds).astype(float) - 1.0) / denominator).sum()
+    pos_num = (preds > 0).sum()
+    idcgs = (1.0 / denominator[:pos_num]).sum()
+    return dcgs / idcgs

@@ -1,6 +1,7 @@
 import torch
 from torch import nn
 from torch.nn.init import xavier_uniform_, xavier_normal_
+from torch.nn.parameter import Parameter
 
 class MF(nn.Module):
     '''
@@ -87,3 +88,21 @@ class MF(nn.Module):
         test_items_emb = self.item_embedding.weight.view(self.n_items, 1, self.embedding_size) # [N D]
         scores = torch.matmul(self.user_embedding(user), test_items_emb.transpose(0, 1))  # [B D], [D N] -> [B N]
         return scores
+
+
+class MF_dnn(MF):
+    def __init__(self, config, data, debiasing=False):
+        super(MF_dnn, self).__init__(config, data, debiasing)
+        # self.dense = nn.Linear(1, 1)
+        self.b = Parameter(torch.Tensor(1))
+        # self.w = Parameter(torch.Tensor(1))
+
+    def forward(self, user, item):
+        user_e = self.user_embedding(user)
+        item_e = self.item_embedding(item)
+        r_ui = torch.mul(user_e, item_e).sum(-1).float() # [B, D] -> [B]
+        # # W * v_u * v_i + b
+        # f_uit = self.dense(r_ui.unsqueeze(1)).squeeze().float() # [B]
+        # # v_u * v_i + b
+        f_uit = r_ui + self.b
+        return f_uit

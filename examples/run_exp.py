@@ -9,9 +9,8 @@ import configparser
 
 from util.data import Dataset
 from offlineExp.gru4rec import GRU4Rec
-from offlineExp.tmf import TMF
-from offlineExp.tmf import TMF_fast
-from offlineExp.mf import MF
+from offlineExp.tmf import TMF, TMF_fast, TMF_fast_variety
+from offlineExp.mf import MF, MF_dnn
 from offlineExp.tf import TF
 # from trainer.trainer import TARS_Trainer as Trainer
 from trainer.trainer import OP_Trainer as Trainer
@@ -81,10 +80,14 @@ def run_dqn():
         MODEL = TMF
     elif conf['mode'].lower() == "tmf_fast":
         MODEL = TMF_fast
+    elif conf['mode'].lower() == "tmf_fast_v":
+        MODEL = TMF_fast_variety
     elif conf['mode'].lower() == "tf":
         MODEL = TF
     elif conf['mode'].lower() == "mf":
         MODEL = MF
+    elif conf['mode'].lower() == "mf_dnn":
+        MODEL = MF_dnn
     elif conf['mode'].lower() == "gru4rec":
         MODEL = GRU4Rec
     else:
@@ -114,6 +117,10 @@ def run_dqn():
 def load_parameters(mode):
     params = {}
     config = configparser.ConfigParser()
+    if 'tmf_fast_v' in mode.lower():
+        mode = 'tmf_fast'
+    elif 'mf_dnn' in mode.lower():
+        mode = 'mf'
     config.read("../conf/"+mode+".properties")
     conf=dict(config.items("hyperparameters"))
     return conf
