@@ -9,13 +9,14 @@ import configparser
 
 from util.data import Dataset
 from offlineExp.gru4rec import GRU4Rec
-from offlineExp.tmf import TMF, TMF_fast, TMF_fast_variety
+from offlineExp.tmf import TMF, TMF_variety, TMF_fast, TMF_fast_variety
 from offlineExp.mf import MF, MF_dnn
 from offlineExp.tf import TF
 # from trainer.trainer import TARS_Trainer as Trainer
-from trainer.trainer import OP_Trainer as Trainer
+from trainer.trainer import OP_Trainer 
+from trainer.trainer import OPPT_Trainer
 
-from evaluator.evaluator import OP_Evaluator as Evaluator
+from evaluator.evaluator import OP_Evaluator, OPPT_Evaluator
 
 # np.random.seed(2020)
 
@@ -37,7 +38,9 @@ def _logging_(basis_conf, params_conf):
     # print(now + " - use gpu: %s" % (basis_conf['use_gpu']))
     if ("evaluation" in basis_conf) and (basis_conf['evaluation'].lower() == 'true'):
         print(now + " - directly load well-trained model and evaluate")
-    print("conf : " + str(params_conf))
+    
+    if basis_conf['mode'][0] != 'b': # baselines do not have params
+        print("conf : " + str(params_conf))
     
 
 def run_dqn():
@@ -64,20 +67,40 @@ def run_dqn():
     # config['SAVE_MODEL_FILE'] = 'sim_random_' + str(num_users) + '_' + str(action_space) + '_' + config["state_encoder"] + '_'
 
     _logging_(conf, config)
+    task = 'OIPT'
+    # task = 'OPPT'
+    if 'task' in conf:
+        task = conf['task']
+    config['task'] = task
+    ## loading data
+    data = Dataset(conf, task=task)
+    # ctr = data.train['ctr']
+    
+    # Super simple baselines just need some statistic info without training process.
+    if 'b' in conf['mode']:
+        evaluator = OP_Evaluator(None, None, data)
+        # evaluator.evaluate(baselines=conf['mode'])
+        for subset in [None, 'pos', 'neg']:
+            evaluator.evaluate(baselines=conf['mode'], subset=subset)
+        # for subset in [None, 'pos', 'neg']:
+        #     for i in range(1, 4):
+        #         print("\n*-*-*-*-*- B%d -*-*-*-*-*" % i)
+        #         evaluator.evaluate(baselines='b%d'%i, subset=subset)
+        exit(0)
+
     # add some fixed parameters
+    config['path'] = conf['data.input.path']
     config['dataset'] = conf['data.input.dataset']
-    config['epochs'] = 100
+    config['epochs'] = 200
     if conf['debiasing'].lower() == 'ips':
         config['debiasing'] = True
     else:
         config['debiasing'] = False
-
-    ## loading data
-    data = Dataset(conf)
-    # ctr = data.train['ctr']
     
     if conf['mode'].lower() == "tmf":
         MODEL = TMF
+    elif conf['mode'].lower() == "tmf_v":
+        MODEL = TMF_variety
     elif conf['mode'].lower() == "tmf_fast":
         MODEL = TMF_fast
     elif conf['mode'].lower() == "tmf_fast_v":
@@ -95,6 +118,10 @@ def run_dqn():
     ## train process
     config['mode'] = conf['mode']
     model = MODEL(config, data, debiasing=config['debiasing'])
+    if ('task' in config) and (config['task']=='OPPT'):
+        Trainer = OPPT_Trainer
+    else:
+        Trainer = OP_Trainer
     trainer = Trainer(config, model, data)
     if ("evaluation" in conf) and (conf['evaluation'].lower() == 'true'):
         print("Directly load well-trained model and evaluate")
@@ -105,6 +132,10 @@ def run_dqn():
 
     # evaluate process
     model.eval()
+    if ('task' in config) and (config['task']=='OPPT'):
+        Evaluator = OPPT_Evaluator
+    else:
+        Evaluator = OP_Evaluator
     evaluator = Evaluator(config, model, data)
     evaluator.evaluate()
     # evaluator.evaluate(ub='false')
@@ -121,6 +152,10 @@ def load_parameters(mode):
         mode = 'tmf_fast'
     elif 'mf_dnn' in mode.lower():
         mode = 'mf'
+    elif 'tmf_v' in mode.lower():
+        mode = 'tmf'
+    elif mode[0] == 'b':
+        return {}
     config.read("../conf/"+mode+".properties")
     conf=dict(config.items("hyperparameters"))
     return conf

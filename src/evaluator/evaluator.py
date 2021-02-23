@@ -56,14 +56,22 @@ def _mse(pred, true):
 def _mae(pred, true):
     return np.absolute(true - pred).mean()
 def _acc(pred, true):
-    pred = np.round(pred).astype(int)
+    if (min(true) == 0.0) and (max(true) == 1.0):        
+        pred = np.round(pred).astype(int)
     return (pred == true).mean()
 
 def cal_ratpred_metrics(score, target):
+    # since in target, 0.5, 1.0, 1.5, ..., 4.5, 5.0
+    target = target * 2 # 1, 2, 3, ..., 9, 10
+    score = score * 2
+    score = score.clip(min(target), max(target))
+    score_ = np.round(score).astype(int) * 1.0 / 2
+    score /= 2.0
+    target /= 2.0
     results = {}
     results['mse'] = _mse(score, target)
     results['mae'] = _mae(score, target)
-    results['acc'] = _acc(score, target)
+    results['acc'] = _acc(score_, target)
     return results
 
 def _nll(score, true):
@@ -99,7 +107,8 @@ class AbstractEvaluator(object):
 
     def __init__(self, config, model, data):
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        self.model = model.to(self.device)
+        if model is not None:
+            self.model = model.to(self.device)
         self.config = config
         self.data = data
 
@@ -218,6 +227,7 @@ class OP_Evaluator(AbstractEvaluator):
         super(OP_Evaluator, self).__init__(config, model, data)
         self.n_items = self.data.n_items
         self.n_users = self.data.n_users
+        self.n_periods = self.data.n_periods
         self.item_birthdate = torch.from_numpy(self.data._get_item_birthdate()).to(self.device)
         
         # get last timestamp of user in the system from the training set, and evaluate on the next one-month
@@ -227,9 +237,9 @@ class OP_Evaluator(AbstractEvaluator):
         if self.period_type == 'month':
             self.period_s = 30 * 24 * 60 * 60
         elif self.period_type == 'year':
-            self.period_s = 356 * 24 * 60 * 60
-        torch.manual_seed(517)
-        np.random.seed(517)
+            self.period_s = 365 * 24 * 60 * 60
+        # torch.manual_seed(517)
+        # np.random.seed(517)
 
     def _get_trainU_last(self):
         train = self.data.train_full
@@ -302,10 +312,6 @@ class OP_Evaluator(AbstractEvaluator):
         # print("******** Fake test, using +5 month **********")
         # itemage_neg = np.clip(itemage_neg+5, 0, self.data.n_periods - 1)
         itemage = self.data.get_itemage(test['ItemId'].values, test['timestamp'].values)
-        # print(itemage)
-        # print(np.unique(itemage, return_counts=True))
-        # print(np.unique(itemage_neg, return_counts=True))
-        # exit(0)
         assert len(users) == len(items)
         assert len(users) == len(itemage_neg)
 
@@ -327,13 +333,6 @@ class OP_Evaluator(AbstractEvaluator):
         interaction['itemage'] = itemages
         interaction['num'] = n_pos + n_neg
         return interaction
-
-    # def _data_pre_next_month_for_ranking(self, K=1):
-    #     ''' 
-    #     Since too many 0s in the ob prediction task, we change it to be a ranking task
-    #     _neg_sampling_next_month can implement it, but too complex
-    #     '''
-
 
     def _data_pre(self, test):
         uid_list = torch.from_numpy(np.array(test['UserId'].values, dtype=int)).to(self.device)
@@ -394,8 +393,8 @@ class OP_Evaluator(AbstractEvaluator):
     def _data_random(self, num = 1000):
         users = torch.randint(self.data.n_users, size=(num, )).to(self.device)
         items = torch.randint(self.n_items, size=(num, )).to(self.device)
-        itemage =torch.randint(self.data.n_periods, size=(num, )).to(self.device)
-        target = torch.where(itemage >= 0.5 * self.data.n_periods, 0, 1).to(self.device)
+        itemage =torch.randint(self.n_periods, size=(num, )).to(self.device)
+        target = torch.where(itemage >= 0.5 * self.n_periods, 0, 1).to(self.device)
         return {'user':users, 'item':items, 'target':target, 'itemage':itemage, 'num':num}
 
     @torch.no_grad()
@@ -416,7 +415,11 @@ class OP_Evaluator(AbstractEvaluator):
         return torch.cat(scores, 0)
         
     @torch.no_grad() 
-    def evaluate(self, ub='false', threshold=1e-3):
+    def evaluate(self, ub='false', threshold=1e-3, baselines = None, subset = None):
+        self._save_pred_OP()
+
+        torch.manual_seed(517)
+        np.random.seed(517)
         # ''' ub: unbiased evaluator'''
         # interaction_pro = self._data_pre(self.data.test)
         # interaction = interaction_pro
@@ -427,32 +430,127 @@ class OP_Evaluator(AbstractEvaluator):
         # evaluate on testset with the interactions happening among next one-month per user
         interaction = self._neg_sampling_next_month(full_negs=True)
         # self._save_something(interaction)
-        
-        # results
-        w_sigmoid = True
-        scores = self._eval_epoch(interaction)
-        print("The chance to generate 1 is %.6f" % ((scores>0).sum()*1.0 / len(scores)))
-        # targets = interaction['target']
-        # scores = torch.zeros_like(targets).float().to(self.device) #+ targets.mean()
-        # w_sigmoid = False
-        # print("!!! Note we want to know what happened if we give all the predicted scores %.6f" % (scores[0].cpu()))
+        # exit(0)
+        w_sigmoid = False
+
+        # # results
+        if baselines is not None:
+            # # simple baselines
+            assert baselines[0] == 'b'
+            scores, w_sigmoid, interaction = self.baselines(interaction, variety=int(baselines[1]), subset=subset) # w_sigmoid means if we should do sigmoid later in cal_op_metrics.
+        else:
+            scores = self._eval_epoch(interaction)
+            scores /= 3.5
+            print("The chance to generate 1 is %.6f" % ((scores>0.5).sum()*1.0 / len(scores)))
         
         # print("the max score of the probability is ", torch.max(scores))
         # # evaluate it as a prediction task, but too many 0s
+        print("results on testset:")
         targets = interaction['target']
         results = cal_op_metrics(scores.cpu().numpy(), targets.cpu().numpy(), w_sigmoid=w_sigmoid)
-        print(results)
+        print('\t'.join(results.keys()), '\n', '\t'.join([str(x) for x in results.values()]))
         # evaluate it as a ranking task
         results = cal_ob_pred2ranking_metrics(interaction, scores)
-        print("results on testset: %s" % (str(results)))
+        print('\t'.join(results.keys()), '\n', '\t'.join([str(x) for x in results.values()]))
+        # print("results on testset: %s" % (str(results)))
         return results
     
     def _save_something(self, interaction):
-        targets = interaction['target'].cpu().numpy()
-        itemages = interaction['itemage'].cpu().numpy()
-        df = pd.DataFrame(data={'target':targets, 'itemage':itemages})
-        df.to_csv('itemage_obLabels.csv', index=False)
+        # # save itemage_obLabels
+        # targets = interaction['target'].cpu().numpy()
+        # itemages = interaction['itemage'].cpu().numpy()
+        # df = pd.DataFrame(data={'target':targets, 'itemage':itemages})
+        # df.to_csv('itemage_obLabels.csv', index=False)
         
+        # # save the distribution of predicted scores sigmoid(W * T + b)
+        itemages = torch.arange(self.n_periods).to(self.device)
+        scores = self.model.forward(None, None, itemages)
+        print(','.join([str(x) for x in scores.cpu().numpy()]))
+
+        # # save the distribution of the p_T in testset
+        # targets = interaction['target'].cpu().numpy()
+        # itemages = interaction['itemage'].cpu().numpy()
+        # p_T_test = []
+        # for i in range(self.n_periods):
+        #     idx = itemages == i
+        #     p_T_test.append(targets[idx].mean())
+        # print(','.join([str(x) for x in p_T_test]))
+        # print(','.join([str(int((itemages == i).sum())) for i in range(self.n_periods)]))
+
+    def _save_pred_OP(self):
+        data = pd.concat([self.data.train_full, self.data.test], ignore_index=True)
+        interaction = self._data_pre(data)
+        scores = self._eval_epoch(interaction).cpu().numpy()
+        scores /= 3.5
+        assert len(scores) == len(data)
+        data['predOP'] = scores
+
+        print("--------- Save the predicted Observation Probabilities of all observed (u,i,t) ----------")
+        path = self.config['path'] + self.config['dataset'] + '/predOP_' + self.config['mode'] + '.csv'
+        data.to_csv(path, sep=',', header=True, index=False)
+        
+    
+    def baselines(self, interaction, variety=1, subset = None): # we should use the training set rather than test set.
+        '''some simple baseline variety
+        B1: all scores equal to 0.0
+        B2: all scores equal to a fixed value, 0.005 or 0.00478 best
+        B3: scores for (u, i) at T equal to a fixed value (diff at diff T).  * Norm, 0.1 / 0.013641 best.
+        B4: scores for given (i, T) fixed.
+        --- Params ---
+        subset: the evaluation subset, if None we use all pos+negs, if pos we only use pos, else only negs
+        '''
+        # train only contains positives
+        # train = self.data.train_full
+        train = self.data.train
+        w_sigmoid = False # do not do sigmoid later in cal_op_metrics
+        targets = interaction['target']
+        if subset is not None:
+            if subset == 'pos':
+                print(" ------ We only evaluate on the positives ----- ")
+                idx = targets == 1
+            else:
+                print(" ------ We only evaluate on the negatives ----- ")
+                idx = targets == 0
+            targets = targets[idx]
+            interaction_ = {'num':idx.sum(), 'target':targets}
+            for key in interaction.keys():
+                if key not in ['num', 'target']:
+                    interaction_[key] = interaction[key][idx]
+            interaction = interaction_
+        scores = torch.zeros_like(targets).float().to(self.device)
+        if variety == 1:
+            print("****** Note we want to know what happened if we give all the predicted scores %.6f" % (scores[0].cpu()))
+        elif variety == 2:
+            # scores += 0.004
+            scores += targets.cpu().numpy().mean()
+            # scores += len(train) * 1.0 / (self.n_users * self.n_items  * self.n_periods)
+            print("****** Note we want to know what happened if we give all the predicted scores %.6f" % (scores[0].cpu()))
+        elif variety == 3:
+            scores_T = []
+            itemages = interaction['itemage']
+            num_D = self.n_users * self.n_items
+            norm = 2 #0.1 / 0.013641
+            print("We do normalization: %f" % norm)
+            for T in range(self.n_periods):
+                # # calculate in training set
+                s_T = (train['ItemAge'] == T).sum() * 1. / num_D * norm
+                # # calculate in test set
+                # s_T = targets[itemages == T].mean()
+                scores[itemages == T] = s_T
+                scores_T.append(s_T)
+            print("****** Note we want to know what happened if we give all the predicted scores %s" % str(scores_T))
+        elif variety == 4:
+            itemages = interaction['itemage']
+            items = interaction['item']
+            num_D = self.n_users * self.n_items
+            s_iT = train.groupby(['ItemId', 'ItemAge']).size() * 1. / num_D
+            norm = 0.012 / s_iT.mean()
+            print("We do normalization: %f" % norm)
+            s_iT *= norm
+            for i, T in s_iT.index:
+                scores[(items == i) & (itemages == T)] = s_iT[i, T]
+        return scores, w_sigmoid, interaction
+
     # def metrics_info(self, results):
 
 def cal_ob_pred2ranking_metrics(interaction, scores, K=10):
@@ -469,7 +567,10 @@ def cal_ob_pred2ranking_metrics(interaction, scores, K=10):
         '''NDCG...MAP...'''
         preds = group_sorted['target'][:K]
         Prec.append(preds.sum() * 1.0 / len(preds))
-        Recall.append(preds.sum() * 1.0 / group_sorted['target'].sum())
+        if group_sorted['target'].sum() == 0:
+            Recall.append(0.0)
+        else:
+            Recall.append(preds.sum() * 1.0 / group_sorted['target'].sum())
         MRR.append(mrrs_(preds))
         MAP.append(maps_(preds))
         NDCG.append(ndcgs_(preds))
@@ -507,3 +608,66 @@ def ndcgs_(preds, denominator=None):
     pos_num = (preds > 0).sum()
     idcgs = (1.0 / denominator[:pos_num]).sum()
     return dcgs / idcgs
+
+
+class OPPT_Evaluator(OP_Evaluator):
+    def __init__(self, config, model, data):
+        super(OPPT_Evaluator, self).__init__(config, model, data)
+    
+    def _data_pre_next_month(self):
+        self.test = self._filter_test_next_month()
+        uid_list = torch.from_numpy(np.array(test['UserId'].values, dtype=int)).to(self.device)
+        iid_list = torch.from_numpy(np.array(test['ItemId'].values, dtype=int)).to(self.device)
+        # target = torch.from_numpy(np.where(test['rating'].values > 3, 1, 0).astype(int)).to(self.device) # rating>3 like=1, <=3 dislike=0
+        target = torch.from_numpy(test['rating'].values).to(self.device) # rating>3 like=1, <=3 dislike=0
+        itemage = torch.from_numpy(np.array(test['ItemAge'].values, dtype=int)).to(self.device)
+        timestamp = torch.from_numpy(np.array(test['timestamp'].values, dtype=int)).to(self.device)
+
+        interaction = {}
+        interaction['user'] = uid_list
+        interaction['item'] = iid_list
+        interaction['target'] = target
+        interaction['itemage'] = itemage
+        interaction['timestamp'] = timestamp
+        interaction['num'] = uid_list.size()[0]
+        return interaction
+    
+    @torch.no_grad()
+    def _eval_epoch(self, interaction, batch_size=512):
+        users = interaction['user']
+        items = interaction['item']
+        itemages = interaction['itemage']
+        num = interaction['num']
+        scores = []
+        start_idx, end_idx = 0, batch_size
+        while start_idx < num:
+            score = self.model.predict({'user':users[start_idx:end_idx], \
+                'item':items[start_idx:end_idx], 'itemage':itemages[start_idx:end_idx]})
+            # print(score)
+            # exit(0)
+            scores.append(score)
+            start_idx = end_idx
+            end_idx += batch_size
+        return torch.cat(scores, 0)
+
+    @torch.no_grad() 
+    def evaluate(self, ub='false', threshold=1e-3, baselines = None, subset = None):
+        interaction = self._data_pre_next_month()
+        scores = self._eval_epoch(interaction)
+        targets = interaction['target']
+        results = cal_ratpred_metrics(scores.cpu().numpy(), targets.cpu().numpy())
+        print('\t'.join(results.keys()), '\n', '\t'.join([str(x) for x in results.values()]))
+
+        # # evaluate it as a ranking task
+        # results = cal_ob_pred2ranking_metrics(interaction, scores)
+        # print('\t'.join(results.keys()), '\n', '\t'.join([str(x) for x in results.values()]))
+        # # print("results on testset: %s" % (str(results)))
+        return results
+
+    def _save_preds_targets(self, preds, target):
+        preds = preds.clip(min(targets), max(targets))
+        preds = np.round(preds * 2) / 2.0
+        self.test['pred'] = preds
+
+        
+        

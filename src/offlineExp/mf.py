@@ -9,9 +9,10 @@ class MF(nn.Module):
     Cite: Collaborative filtering with temporal dynamics
     We only consider q_i(t) here when modeling r_{u,i,t}
     '''
-    def __init__(self, config, data, debiasing=False):
+    def __init__(self, config, data, debiasing=False, output_dim=2):
         super(MF, self).__init__()
 
+        self.task = config['task']
         # load parameter info
         self.debiasing = debiasing
         self.embedding_size = int(config['embedding_size'])
@@ -20,21 +21,31 @@ class MF(nn.Module):
         self.batch_size = int(config['batch_size'])
         self.n_items = data.n_items 
         self.n_users = data.n_users
+        self.output_dim = output_dim
 
         # define layers and loss
         self.user_embedding = nn.Embedding(self.n_users, self.embedding_size)
         self.item_embedding = nn.Embedding(self.n_items, self.embedding_size)
-
+        
+        self.m = None
+        reduction = 'mean'
+        if self.task == 'OPPT':
+            reduction = 'none'
         if self.loss_type.upper() == 'CE':
             if self.debiasing:
                 self.loss_fct = nn.CrossEntropyLoss(reduction='none')
             else:
                 self.loss_fct = nn.CrossEntropyLoss()
         elif self.loss_type.upper() == 'MSE':
-            self.loss_fct = nn.MSELoss()
+            self.loss_fct = nn.MSELoss(reduction)
         elif self.loss_type.upper() == 'NLL':
             # self.loss_fct = nn.NLLLoss(reduction='none')
-            self.loss_fct = nn.BCEWithLogitsLoss()
+            # self.loss_fct = nn.BCEWithLogitsLoss()
+            self.loss_fct = nn.BCELoss(reduction=reduction)
+            self.m = nn.Sigmoid()
+            if self.output_dim > 2:
+                self.loss_fct == nn.CrossEntropyLoss(reduction=reduction)
+                self.m = nn.Softmax()
         else:
             raise NotImplementedError("Make sure 'loss_type' in ['CE', 'MSE', 'NLL']!")
 
@@ -63,7 +74,10 @@ class MF(nn.Module):
         #     scores = torch.mul(user_e, item_e).sum(-1).float() # [B, D] -> [B]
         #     scores = torch.sigmoid(scores).unsqueeze(-1) #[B 1] for obser
         #     return torch.cat((1.0 - scores, scores), -1) # [B, 2]
-        return torch.mul(user_e, item_e).sum(-1).float() # [B, D] -> [B]
+        output = torch.mul(user_e, item_e).sum(-1).float() # [B, D] -> [B]
+        if self.m is None:
+            return output
+        return self.m(output)
         
         
     def calculate_loss(self, interaction):

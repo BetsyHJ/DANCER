@@ -22,8 +22,12 @@ class AbstractTrainer(object):
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.model = model.to(self.device)
         self.data = data
+        self.train = self.data.train_full
         self.learner = config['optimizer']
         self.learning_rate = float(config['learning_rate'])
+        self.l2_reg = 0
+        if 'l2_reg' in config:
+            self.l2_reg = float(config['l2_reg'])
 
         # 
         self.best_valid_score = None
@@ -34,16 +38,16 @@ class AbstractTrainer(object):
             torch.optim: the optimizer
         """
         if self.learner.lower() == 'adam':
-            optimizer = optim.Adam(self.model.parameters(), lr=self.learning_rate)
+            optimizer = optim.Adam(self.model.parameters(), lr=self.learning_rate, weight_decay=self.l2_reg)
         elif self.learner.lower() == 'sgd':
-            optimizer = optim.SGD(self.model.parameters(), lr=self.learning_rate)
+            optimizer = optim.SGD(self.model.parameters(), lr=self.learning_rate, weight_decay=self.l2_reg)
         elif self.learner.lower() == 'adagrad':
-            optimizer = optim.Adagrad(self.model.parameters(), lr=self.learning_rate)
+            optimizer = optim.Adagrad(self.model.parameters(), lr=self.learning_rate, weight_decay=self.l2_reg)
         elif self.learner.lower() == 'rmsprop':
-            optimizer = optim.RMSprop(self.model.parameters(), lr=self.learning_rate)
+            optimizer = optim.RMSprop(self.model.parameters(), lr=self.learning_rate, weight_decay=self.l2_reg)
         else:
             self.logger.warning('Received unrecognized optimizer, set default Adam optimizer')
-            optimizer = optim.Adam(self.model.parameters(), lr=self.learning_rate)
+            optimizer = optim.Adam(self.model.parameters(), lr=self.learning_rate, weight_decay=self.l2_reg)
         return optimizer
 
     def _early_stopping(self, value, best, cur_step, max_step, bigger=True):
@@ -98,6 +102,14 @@ class AbstractTrainer(object):
         """
 
         raise NotImplementedError('Method [next] should be implemented.')
+    def save_model(self, epoch):
+        state = {'net': self.model.state_dict(), 'optimizer':self.optimizer.state_dict(), 'epoch':epoch}
+        torch.save(state, self.saved_model_file)
+    
+    def load_model(self):
+        checkpoint = torch.load(self.saved_model_file)
+        self.model.load_state_dict(checkpoint['net'])
+        self.optimizer.load_state_dict(checkpoint['optimizer'])
 
 
 class TARS_Trainer(AbstractTrainer):
@@ -176,7 +188,7 @@ class TARS_Trainer(AbstractTrainer):
         return total_loss
 
     def fit(self, valid_data=None, verbose=True, saved=True):
-        interaction = self._data_pre(self.data.train)
+        interaction = self._data_pre(self.train)
         start = time()
         for epoch_idx in range(self.epochs):
             train_loss = self._train_epoch(interaction)
@@ -225,15 +237,6 @@ class TARS_Trainer(AbstractTrainer):
             losses.backward()
             self.optimizer.step()
         return total_loss
-
-    def save_model(self, epoch):
-        state = {'net': self.model.state_dict(), 'optimizer':self.optimizer.state_dict(), 'epoch':epoch}
-        torch.save(state, self.saved_model_file)
-    
-    def load_model(self):
-        checkpoint = torch.load(self.saved_model_file)
-        self.model.load_state_dict(checkpoint['net'])
-        self.optimizer.load_state_dict(checkpoint['optimizer'])
     
     @torch.no_grad()
     def evaluate(self):
@@ -378,7 +381,7 @@ class Seq_Trainer(AbstractTrainer):
 
 
     def fit(self, valid_data=None, verbose=True, saved=True):
-        interaction = self._data_pre(self.data.train)
+        interaction = self._data_pre(self.train)
         start = time()
         for epoch_idx in range(self.epochs):
             train_loss = self._train_epoch(interaction)
@@ -430,15 +433,6 @@ class Seq_Trainer(AbstractTrainer):
             self.optimizer.step()
         return total_loss
 
-    def save_model(self, epoch):
-        state = {'net': self.model.state_dict(), 'optimizer':self.optimizer.state_dict(), 'epoch':epoch}
-        torch.save(state, self.saved_model_file)
-    
-    def load_model(self):
-        checkpoint = torch.load(self.saved_model_file)
-        self.model.load_state_dict(checkpoint['net'])
-        self.optimizer.load_state_dict(checkpoint['optimizer'])
-
     def evaluate(self):
         interaction = self._data_pre_fullseq(self.data.train_full)
         # losses
@@ -452,9 +446,6 @@ class Seq_Trainer(AbstractTrainer):
         results = calculate_metrics(target_pos.cpu().numpy())
         return results, losses
         
-
-
-
 class OP_Trainer(AbstractTrainer):
     '''
     For time-aware observation prediction, such as TMF
@@ -467,6 +458,7 @@ class OP_Trainer(AbstractTrainer):
         print("model will be saved into:", self.saved_model_file)
         self.epochs = config['epochs']
         self.batch_size = int(config['batch_size'])
+        self.n_users = self.data.n_users
         self.n_items = self.data.n_items
         self.n_periods = self.data.n_periods
 
@@ -550,6 +542,7 @@ class OP_Trainer(AbstractTrainer):
         return interaction_neg
 
     def _neg_sampling_time(self, interaction, full_negs=False, bigger=True):
+        # only add the negatives of different timestamp/itemage, O(T*#Ratings)
         users = interaction['user']
         items = interaction['item']
         num = interaction['num']
@@ -577,7 +570,80 @@ class OP_Trainer(AbstractTrainer):
         interaction_neg['target'] = targets_neg
         interaction_neg['itemage'] = itemages_neg
         return interaction_neg
-        
+
+    def _neg_sampling_time_based(self):
+        # negatives for training Time-based baselines, O(U*I*T)
+        train = self.data.train_full
+        ob_uiT = np.zeros((self.n_users, self.n_items, self.n_periods), dtype=int) # O(U*I*T)
+        # give all pos (u, i, itemage) label=1
+        users, items, itemages = train['UserId'], train['ItemId'], train['ItemAge']
+        ob_uiT[users, items, itemages] = 1
+        # # negatives
+        # u_lifelength = []
+        for u, group in train.groupby(by=['UserId']):
+            lasttime = max(group['timestamp'])
+            # # # dropout the items which are published after the lasttime per user
+            # idx1 = self.data.item_birthdate >= lasttime 
+            # items_neg1 = np.where(idx1)[0]
+            # ob_uiT[u][items_neg1] = -1
+            # # # for each unobserved (u, i), we have L(u, i, all T before lastT_i) = 1, and L(u, i, after lastT_i) = -1
+            # unobserved_items = np.ones(self.n_items)
+            # unobserved_items[group['ItemId']] = 0 # delete observed items
+            # unobserved_items[idx1] = 0 # delete too young items
+            # unobserved_items = np.where(unobserved_items)[0]
+            # # get all T before lasttime
+            # biggestT_perI = self.data.get_itemage(unobserved_items, np.full(unobserved_items.shape, lasttime))
+            # idx_i, idx_T = [], []
+            # for i in range(len(unobserved_items)):
+            #     if (biggestT_perI[i]+1) >= self.n_periods:
+            #         continue
+            #     idx_T.append(np.arange(biggestT_perI[i]+1, self.n_periods))
+            #     idx_i.append(np.full(self.n_periods-(biggestT_perI[i]+1), unobserved_items[i]))
+            # if len(idx_i) > 0:
+            #     idx_i = np.concatenate(idx_i)
+            #     idx_T = np.concatenate(idx_T)
+            #     ob_uiT[u][idx_i, idx_T] = -1
+            # # for (u, any i, t before user first) =-1
+            firsttime = min(group['timestamp'])
+            lasttime = max(group['timestamp'])
+            # u_lifelength.append(lasttime-firsttime)
+            smallestT_perI = self.data.get_itemage(np.arange(self.n_items), np.full(self.n_items, firsttime))
+            biggestT_perI = self.data.get_itemage(np.arange(self.n_items), np.full(self.n_items, lasttime), del_young_items=True)
+            idx_i, idx_T = [], []
+            for i in range(self.n_items):
+                if smallestT_perI[i] > 0:
+                    idx_T.append(np.arange(smallestT_perI[i]))
+                    idx_i.append(np.full(smallestT_perI[i], i))
+                if biggestT_perI[i] < 0:
+                    idx_T.append(np.arange(self.n_periods))
+                    idx_i.append(np.full(self.n_periods, i))
+                else:
+                    if ((biggestT_perI[i] + 1) < self.n_periods):
+                        idx_T.append(np.arange(biggestT_perI[i]+1, self.n_periods))
+                        idx_i.append(np.full(self.n_periods-(biggestT_perI[i]+1), i))
+            if len(idx_i) > 0:
+                idx_i = np.concatenate(idx_i)
+                idx_T = np.concatenate(idx_T)
+                ob_uiT[u][idx_i, idx_T] = -1
+
+        # u_lifelength = (np.array(u_lifelength) / (30 * 24 * 60 * 60)).astype(int)
+        # print(np.unique(u_lifelength, return_counts=True))
+
+        # # ob_uiT: l=0 negatives; l=1 positives, l=-1 meaningless samples.
+        users_neg, items_neg, itemages_neg = np.where(ob_uiT==0)
+        assert users_neg.shape == items_neg.shape
+        users_neg = torch.from_numpy(users_neg).to(self.device)
+        items_neg = torch.from_numpy(items_neg).to(self.device)
+        itemages_neg = torch.from_numpy(itemages_neg).to(self.device)
+        targets_neg = torch.zeros_like(users_neg, dtype=float).to(self.device)
+
+        interaction_neg = {}
+        interaction_neg['num'] = len(users_neg)
+        interaction_neg['user'] = users_neg
+        interaction_neg['item'] = items_neg
+        interaction_neg['target'] = targets_neg
+        interaction_neg['itemage'] = itemages_neg
+        return interaction_neg
 
     def _neg_sampling(self, interaction, train_set):
         ns_type = self.ns_type
@@ -602,12 +668,15 @@ class OP_Trainer(AbstractTrainer):
             interaction_neg = self._neg_sampling_random(train_set, full_negs=True)
             interaction_ = self._merge_interactions(interaction, interaction_neg)
         elif ns_type == 'time':
-            # (u, i, ia) -> 1 as pos, then (u, i-, ia) & (u, i, ia+) as neg
-            interaction_neg1 = self._neg_sampling_random(train_set, full_negs=True)
-            interaction_neg2 = self._neg_sampling_time(interaction, full_negs=True)
-            interaction_ = self._merge_interactions(interaction, interaction_neg1)
-            interaction_ = self._merge_interactions(interaction_, interaction)
-            interaction_ = self._merge_interactions(interaction_, interaction_neg2)
+            # # (u, i, ia) -> 1 as pos, then (u, i-, ia) & (u, i, ia+) as neg
+            # interaction_neg1 = self._neg_sampling_random(train_set, full_negs=True)
+            # interaction_neg2 = self._neg_sampling_time(interaction, full_negs=True)
+            # interaction_ = self._merge_interactions(interaction, interaction_neg1)
+            # interaction_ = self._merge_interactions(interaction_, interaction)
+            # interaction_ = self._merge_interactions(interaction_, interaction_neg2)
+            # # (u, i, T-) and (u, i-, all T) as negatives
+            interaction_neg = self._neg_sampling_time_based()
+            interaction_ = self._merge_interactions(interaction, interaction_neg)
         elif ns_type == 'time-only':
             # # (u,i,t) -> 1, (u,i,t+) -> 0
             # interaction_['user'] = torch.cat((users, users), 0)
@@ -668,17 +737,26 @@ class OP_Trainer(AbstractTrainer):
         return interaction
     
     def fit(self, valid_data=None, verbose=True, saved=True, resampling=True):
-        interaction_pos = self._data_pre(self.data.train)
+        interaction_pos = self._data_pre(self.train)
         start = time()
         for epoch_idx in range(self.epochs):
             if (epoch_idx == 0) or (resampling):
-                interaction = self._neg_sampling(interaction_pos, self.data.train) 
+                interaction = self._neg_sampling(interaction_pos, self.train)
+                # target = interaction['target'] 
+                # itemage = interaction['itemage']
+                # p_T_train = []
+                # for i in range(self.n_periods):
+                #     p_T_train.append(target[itemage == i].mean().cpu().numpy()) # / (self.n_users * self.n_items)
+                # print("p_T in train: %s" % (','.join([str(x) for x in p_T_train])))
+                # exit(0)
+                # print("#ratings=%d, p(o)=%f" % (len(target), target.mean().cpu()))
+                # exit(0)
             train_loss = self._train_epoch(interaction)
             if (epoch_idx + 1) % 1 == 0: # evaluate on valid set
                 # self.load_model()
-                valid_results, valid_loss = self.evaluate()
+                valid_results, valid_loss = self.evaluate(interaction)
                 print("epoch %d, time-consumin: %f s, train-loss: %f, valid-loss: %f, \nresults on validset: %s" % (epoch_idx+1, time()-start, train_loss, valid_loss, str(valid_results)))
-                self.best_valid_score, _, stop_flag, _ = self._early_stopping(valid_loss, self.best_valid_score, epoch_idx, 1, bigger=False)
+                self.best_valid_score, _, stop_flag, _ = self._early_stopping(valid_loss, self.best_valid_score, epoch_idx, 10, bigger=False)
                 # print(self.best_valid_score, stop_flag, valid_loss)
                 # exit(0)
                 if stop_flag:
@@ -718,20 +796,26 @@ class OP_Trainer(AbstractTrainer):
             total_loss += losses.item()
         scores = torch.cat(scores, 0)
         return total_loss, scores
-
-    def save_model(self, epoch):
-        state = {'net': self.model.state_dict(), 'optimizer':self.optimizer.state_dict(), 'epoch':epoch}
-        torch.save(state, self.saved_model_file)
-    
-    def load_model(self):
-        checkpoint = torch.load(self.saved_model_file)
-        self.model.load_state_dict(checkpoint['net'])
-        self.optimizer.load_state_dict(checkpoint['optimizer'])
     
     @torch.no_grad()
-    def evaluate(self):
-        interaction_pos = self._data_pre(self.data.valid)
-        interaction = self._neg_sampling(interaction_pos, self.data.valid)
+    def evaluate(self, interaction=None, samplings=0.1):
+        # # use training set (pos+negs), sample a small
+        if interaction is not None:
+            if samplings < 1.0:
+                num = int(interaction['num'] * samplings)
+                idx = np.random.choice(interaction['num'], num)
+                interaction_ = {}
+                interaction_['num'] = num
+                interaction_['user'] = interaction['user'][idx]
+                interaction_['item'] = interaction['item'][idx]
+                interaction_['itemage'] = interaction['itemage'][idx]
+                interaction_['target'] = interaction['target'][idx]
+                interaction = interaction_
+        else:
+            # # generate negatives based on validset
+            interaction_pos = self._data_pre(self.data.valid)
+            interaction = self._neg_sampling(interaction_pos, self.data.valid)
+
         # # losses and results
         # losses = self.model.calculate_loss(interaction).item()
         # scores = self.model.predict(interaction)
@@ -739,5 +823,171 @@ class OP_Trainer(AbstractTrainer):
 
         # find the position of the target item
         targets = interaction['target']
-        results = cal_op_metrics(scores.cpu().numpy(), targets.cpu().numpy())
+        results = cal_op_metrics(scores.cpu().numpy(), targets.cpu().numpy(), w_sigmoid=False)
         return results, losses
+
+
+class OPPT_Trainer(AbstractTrainer):
+    '''
+    Observed user preference prediction task (OPPT) is to predict the observed user preference, w.r.t $P(y_{u,i,t}, o_{u,i,t})$.
+    the time information could be a lot of things: user age, season, workday/weekend, even itemage.
+    Here we first use itemage, since the OPPT also uses itemage so it is easy to apply.
+    '''
+    def __init__(self, config, model, data):
+        super(OPPT_Trainer, self).__init__(config, model, data)
+
+        self.optimizer = config['optimizer']
+        self.saved_model_file = "./checkpoint_dir/OPPT_" + config['dataset'] + '_' + config['mode']
+        print("model will be saved into:", self.saved_model_file)
+        self.epochs = config['epochs']
+        self.batch_size = int(config['batch_size'])
+        self.n_users = self.data.n_users
+        self.n_items = self.data.n_items
+        self.n_periods = self.data.n_periods
+
+        self.optimizer = self._build_optimizer()
+        self.item_birthdate = torch.from_numpy(self.data._get_item_birthdate()).to(self.device)
+        # negative sampling strategy, random or time (with temporal order)
+        if 'ns_type' not in config:
+            self.ns_type = 'random'
+        else:
+            self.ns_type = config['ns_type'].lower()
+        print("Training with Negative-Sampling: %s based" % self.ns_type)
+        # # np.random.seed only control the train-test-splitting
+        # torch.manual_seed(517)
+        np.random.seed(517)
+        
+    def _data_pre(self, train):
+        '''
+        Different from OIPT, we only need the observed data rather than with negatives (unobservation indicators).
+        Return: (u, i, temporal_content, p(o_{u,i,t}), y), y is one-hot vector
+        '''
+        uid_list = torch.from_numpy(np.array(train['UserId'].values, dtype=int)).to(self.device)
+        iid_list = torch.from_numpy(np.array(train['ItemId'].values, dtype=int)).to(self.device)
+        itemage = torch.from_numpy(np.array(train['ItemAge'].values, dtype=int)).to(self.device)
+        # target = torch.from_numpy(np.where(train['rating'].values > 3, 1, 0).astype(int)).to(self.device) # rating>3 like=1, <=3 dislike=0
+        target = torch.from_numpy(train['rating'].values).to(self.device) # rating>3 like=1, <=3 dislike=0
+        predOP = torch.from_numpy(np.array(train['predOP'].values, dtype=float)).to(self.device)
+        # target = torch.from_numpy(np.array(train['rating'].values, dtype=int)-1).to(self.device)
+
+        interaction = {}
+        interaction['user'] = uid_list
+        interaction['item'] = iid_list
+        interaction['target'] = target
+        interaction['itemage'] = itemage
+        interaction['predOP'] = predOP
+        interaction['num'] = uid_list.size()[0]
+        return interaction
+
+    def _shuffle_date(self, interaction):
+        # shuffle the data
+        order = torch.randperm(interaction['num'])
+        for key in interaction.keys():
+            if key != 'num':
+                value = interaction[key]
+                interaction[key] = value[order]
+        return interaction
+
+    def _train_epoch(self, interaction):
+        user = interaction['user']
+        item = interaction['item']
+        target = interaction['target']
+        itemage = interaction['itemage']
+        num = interaction['num']
+        predOP = interaction['predOP']
+        # train on batch
+        total_loss = 0
+        start_idx = 0
+        end_idx = start_idx + self.batch_size
+        while start_idx < num:
+            self.optimizer.zero_grad()
+            losses = self.model.calculate_loss({'user': user[start_idx:end_idx], \
+                'item': item[start_idx:end_idx], 'target': target[start_idx:end_idx], \
+                'itemage': itemage[start_idx:end_idx]})
+            # In task OPPT, the reduction of calculate_loss is none, then ...
+            # losses = torch.mul(losses, predOP[start_idx:end_idx]).sum()
+            losses = losses.mean()
+            total_loss += losses.item()
+            losses.backward()
+            self.optimizer.step()
+            start_idx = end_idx
+            end_idx += self.batch_size
+        return total_loss
+
+    def fit(self, valid_data=None, verbose=True, saved=True, resampling=True):
+        interaction = self._data_pre(self.train)
+        interaction, interaction_valid = self.train_valid_split(interaction)
+        start = time()
+        for epoch_idx in range(self.epochs):
+            if resampling:
+                interaction = self._shuffle_date(interaction)
+            train_loss = self._train_epoch(interaction)
+            if (epoch_idx + 1) % 1 == 0: # evaluate on valid set
+                valid_results, valid_loss = self.evaluate(interaction_valid)
+                print("epoch %d, time-consumin: %f s, train-loss: %f, valid-loss: %f, \nresults on validset: %s" % (epoch_idx+1, time()-start, train_loss, valid_loss, str(valid_results)))
+                self.best_valid_score, _, stop_flag, _ = self._early_stopping(valid_loss, self.best_valid_score, epoch_idx, 10, bigger=False)
+                # print(self.best_valid_score, stop_flag, valid_loss)
+                # exit(0)
+                if stop_flag:
+                    print("Finished training, best eval result in epoch %d" % epoch_idx)
+                    break
+                self.save_model(epoch_idx)
+                start = time()
+        return self.model
+
+    def train_valid_split(self, interaction, sampling=0.25):
+        num = interaction['num']
+        indices = np.random.uniform(size=num)
+        train_idx = indices >= 0.25
+        valid_idx = np.invert(train_idx)
+        num_train, num_valid = (train_idx).sum(), (valid_idx).sum()
+        assert (num_train + num_valid) == num
+
+        interaction_train, interaction_valid = {}, {}
+        interaction_train['num'] = num_train
+        interaction_valid['num'] = num_valid
+        for k in interaction.keys():
+            if k != 'num':
+                value = interaction[k]
+                interaction_train[k] = value[train_idx]
+                interaction_valid[k] = value[valid_idx]
+        return interaction_train, interaction_valid
+
+    @torch.no_grad()
+    def evaluate(self, interaction):
+        losses, scores = self._eval_epoch(interaction)
+         # find the position of the target item
+        targets = interaction['target']
+        # print(targets.size(), scores.size())
+        assert scores.size() == targets.size()
+        # results = cal_op_metrics(scores.cpu().numpy(), targets.cpu().numpy(), w_sigmoid=False)
+        results = cal_ratpred_metrics(scores.cpu().numpy(), targets.cpu().numpy())
+        return results, losses
+
+    @torch.no_grad()      
+    def _eval_epoch(self, interaction):
+        user = interaction['user']
+        item = interaction['item']
+        target = interaction['target']
+        itemage = interaction['itemage']
+        predOP = interaction['predOP']
+        num = interaction['num']
+
+        start_idx = 0
+        end_idx = start_idx + self.batch_size
+        total_loss = 0
+        scores = []
+        while start_idx < num:
+            interaction_batch = {'user': user[start_idx:end_idx], \
+                'item': item[start_idx:end_idx], 'target': target[start_idx:end_idx], 'itemage': itemage[start_idx:end_idx]}
+            losses = self.model.calculate_loss(interaction_batch)
+            # losses = torch.mul(losses, predOP[start_idx: end_idx]).sum()
+            losses = losses.mean()
+            total_loss += losses.item()
+            scores.append(self.model.predict(interaction_batch))
+            start_idx = end_idx
+            end_idx += self.batch_size
+        scores = torch.cat(scores, 0)
+        return total_loss, scores
+    
+    
