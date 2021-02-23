@@ -110,7 +110,7 @@ class Dataset(object):
             filename = self.path + self.dataset + '/predOP_tmf_fast_v.csv'
         elif self.dataset == 'ml-100k':
             filename = self.path + self.dataset + '/predOP_mf.csv'
-        elif:
+        else:
             raise NotImplementedError("Only implement for ml-100k or ml-latest-small")
         predOP = self._load_ratings(filename)
         predOP = predOP[['UserId', 'ItemId', 'rating', 'timestamp', 'predOP']]

@@ -61,13 +61,18 @@ def _acc(pred, true):
     return (pred == true).mean()
 
 def cal_ratpred_metrics(score, target):
-    # since in target, 0.5, 1.0, 1.5, ..., 4.5, 5.0
-    target = target * 2 # 1, 2, 3, ..., 9, 10
-    score = score * 2
+    # for ml-100K, ratings are 1, 2, 3, 4, 5
     score = score.clip(min(target), max(target))
-    score_ = np.round(score).astype(int) * 1.0 / 2
-    score /= 2.0
-    target /= 2.0
+    score_ = np.round(score).astype(int)
+    
+    # # since in target, 0.5, 1.0, 1.5, ..., 4.5, 5.0
+    # target = target * 2 # 1, 2, 3, ..., 9, 10
+    # score = score * 2
+    # score = score.clip(min(target), max(target))
+    # score_ = np.round(score).astype(int) * 1.0 / 2
+    # score /= 2.0
+    # target /= 2.0
+
     results = {}
     results['mse'] = _mse(score, target)
     results['mae'] = _mae(score, target)
@@ -197,7 +202,7 @@ class RatPred_Evaluator(AbstractEvaluator):
         uid_list = torch.from_numpy(np.array(test['UserId'].values, dtype=int)).to(self.device)
         iid_list = torch.from_numpy(np.array(test['ItemId'].values, dtype=int)).to(self.device)
         target = torch.from_numpy(np.array(test['rating'].values, dtype=float)).to(self.device)
-        itemage = torch.from_numpy(np.array(test['ItemAge_month'].values, dtype=int)).to(self.device)
+        itemage = torch.from_numpy(np.array(test['ItemAge'].values, dtype=int)).to(self.device)
         
         interaction = {}
         interaction['user'] = uid_list
@@ -616,6 +621,7 @@ class OPPT_Evaluator(OP_Evaluator):
     
     def _data_pre_next_month(self):
         self.test = self._filter_test_next_month()
+        test = self.test
         uid_list = torch.from_numpy(np.array(test['UserId'].values, dtype=int)).to(self.device)
         iid_list = torch.from_numpy(np.array(test['ItemId'].values, dtype=int)).to(self.device)
         # target = torch.from_numpy(np.where(test['rating'].values > 3, 1, 0).astype(int)).to(self.device) # rating>3 like=1, <=3 dislike=0
@@ -658,16 +664,25 @@ class OPPT_Evaluator(OP_Evaluator):
         results = cal_ratpred_metrics(scores.cpu().numpy(), targets.cpu().numpy())
         print('\t'.join(results.keys()), '\n', '\t'.join([str(x) for x in results.values()]))
 
+        self._save_something(preds=scores.cpu().numpy())
         # # evaluate it as a ranking task
         # results = cal_ob_pred2ranking_metrics(interaction, scores)
         # print('\t'.join(results.keys()), '\n', '\t'.join([str(x) for x in results.values()]))
         # # print("results on testset: %s" % (str(results)))
         return results
 
-    def _save_preds_targets(self, preds, target):
-        preds = preds.clip(min(targets), max(targets))
-        preds = np.round(preds * 2) / 2.0
-        self.test['pred'] = preds
-
-        
-        
+    def _save_something(self, preds=None, target=None):
+        # # only for tmf_v w/ global_offset_T
+        # global_offset_T = self.model.global_T.weight.data.cpu().numpy().squeeze()
+        # print(global_offset_T)
+        # # look at the distributions on the preds per T
+        print(len(preds), len(self.test))
+        age = np.arange(self.data.n_periods)
+        avg_T = []
+        for T in age:
+            # print(self.test['ItemAge'] == T)
+            avg_T.append((preds[(self.test['ItemAge'] == T).values]).mean())
+        print(avg_T)
+        # preds = preds.clip(min(targets), max(targets))
+        # preds = np.round(preds * 2) / 2.0
+        # self.test['pred'] = preds

@@ -106,7 +106,7 @@ class TMF(nn.Module):
         user = interaction['user']
         test_items_emb = self.item_embedding.weight.view(self.n_items, 1, self.embedding_size) + \
                 self.item_Dyn_embedding.weight.view(self.n_items, self.n_periods, self.embedding_size) # [N D] + [N T D] -> [N T D]
-        test_items_emb = test_i tems_emb.view(self.n_items * self.n_periods, self.embedding_size) #[N*T D]
+        test_items_emb = test_items_emb.view(self.n_items * self.n_periods, self.embedding_size) #[N*T D]
         scores = torch.matmul(self.user_embedding(user), test_items_emb.transpose(0, 1))  # [B D], [D N*T] -> [B N*T]
         return scores.view(-1, self.n_items, self.n_periods) # [B N T]
 
