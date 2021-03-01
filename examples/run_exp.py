@@ -10,7 +10,7 @@ import configparser
 from util.data import Dataset
 from offlineExp.gru4rec import GRU4Rec
 from offlineExp.tmf import TMF, TMF_variety, TMF_fast, TMF_fast_variety
-from offlineExp.mf import MF, MF_dnn
+from offlineExp.mf import MF, MF_v
 from offlineExp.tf import TF
 # from trainer.trainer import TARS_Trainer as Trainer
 from trainer.trainer import OP_Trainer 
@@ -33,8 +33,8 @@ def _logging_(basis_conf, params_conf):
     origin_data_name = basis_conf["data.input.dataset"]
     debiasing = basis_conf["debiasing"]
     print(now + " - data: %s" % origin_data_name)
-    print(now + " - model: %s" % (basis_conf['mode']))
-    print(now + " - debiasing: %s" % (debiasing))
+    print(now + " - task: %s" % (params_conf['task']))
+    print(now + " - model: %s, debiasing: %s" % (basis_conf['mode'], debiasing))
     # print(now + " - use gpu: %s" % (basis_conf['use_gpu']))
     if ("evaluation" in basis_conf) and (basis_conf['evaluation'].lower() == 'true'):
         print(now + " - directly load well-trained model and evaluate")
@@ -66,32 +66,38 @@ def run_dqn():
     #     conf['mode'] + '_' + config["state_encoder"] + '_' + 'r01_SmoothL1_' + 'notrick_' + tuning + str(config[tuning]) + '_' 
     # config['SAVE_MODEL_FILE'] = 'sim_random_' + str(num_users) + '_' + str(action_space) + '_' + config["state_encoder"] + '_'
 
-    _logging_(conf, config)
     task = 'OIPT'
     # task = 'OPPT'
     if 'task' in conf:
         task = conf['task']
     config['task'] = task
+    _logging_(conf, config)
     ## loading data
     data = Dataset(conf, task=task)
+    print("********* Training/test splitting: random (using re-splitting) **********")
+    data.resplitting_random(ratio=0.25)
     # ctr = data.train['ctr']
     
     # Super simple baselines just need some statistic info without training process.
     if 'b' in conf['mode']:
-        evaluator = OP_Evaluator(None, None, data)
-        # evaluator.evaluate(baselines=conf['mode'])
-        for subset in [None, 'pos', 'neg']:
-            evaluator.evaluate(baselines=conf['mode'], subset=subset)
-        # for subset in [None, 'pos', 'neg']:
-        #     for i in range(1, 4):
-        #         print("\n*-*-*-*-*- B%d -*-*-*-*-*" % i)
-        #         evaluator.evaluate(baselines='b%d'%i, subset=subset)
+        if config['task'] == 'OIPT':
+            evaluator = OP_Evaluator(None, None, data)
+            # evaluator.evaluate(baselines=conf['mode'], subset='neg')
+            for subset in [None, 'pos', 'neg']:
+                evaluator.evaluate(baselines=conf['mode'], subset=subset)
+            # for subset in [None, 'pos', 'neg']:
+            #     for i in range(1, 4):
+            #         print("\n*-*-*-*-*- B%d -*-*-*-*-*" % i)
+            #         evaluator.evaluate(baselines='b%d'%i, subset=subset)
+        else:
+            evaluator = OPPT_Evaluator(None, None, data)
+            evaluator.evaluate(baselines=conf['mode'])
         exit(0)
 
     # add some fixed parameters
     config['path'] = conf['data.input.path']
     config['dataset'] = conf['data.input.dataset']
-    config['epochs'] = 200
+    config['epochs'] = 500
     if conf['debiasing'].lower() == 'ips':
         config['debiasing'] = True
     else:
@@ -109,8 +115,8 @@ def run_dqn():
         MODEL = TF
     elif conf['mode'].lower() == "mf":
         MODEL = MF
-    elif conf['mode'].lower() == "mf_dnn":
-        MODEL = MF_dnn
+    elif conf['mode'].lower() == "mf_v":
+        MODEL = MF_v
     elif conf['mode'].lower() == "gru4rec":
         MODEL = GRU4Rec
     else:
@@ -150,7 +156,7 @@ def load_parameters(mode):
     config = configparser.ConfigParser()
     if 'tmf_fast_v' in mode.lower():
         mode = 'tmf_fast'
-    elif 'mf_dnn' in mode.lower():
+    elif 'mf_v' in mode.lower():
         mode = 'mf'
     elif 'tmf_v' in mode.lower():
         mode = 'tmf'

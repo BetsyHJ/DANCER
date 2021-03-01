@@ -3,6 +3,7 @@ import pandas as pd
 
 class Dataset(object):
     def __init__(self, config, task='OIPT'):
+        # np.random.seed(2021)
         path = config['data.input.path']
         dataset = config['data.input.dataset']
         self.path = path
@@ -35,12 +36,21 @@ class Dataset(object):
         elif self.period_type == 'month':
             if 'data.itemage.max' not in config:
                 self.n_periods = 36
-                
+        self.max_period = self.n_periods - 1
+        self.n_bins = None
         train_itemage = self.get_itemage(self.train_full['ItemId'], self.train_full['timestamp'])
         self.n_periods = min(self.n_periods-1, max(train_itemage)) + 1
         self.train_full['ItemAge'] = train_itemage
+        # # del the items only appearing in training set
+        n_test = len(self.test)
+        self.test = self.test.drop(self.test[~self.test['ItemId'].isin(self.train_full['ItemId'].unique())].index)
+        print("Drop the items appearing in training set but not in test. Nr %d" % (n_test - len(self.test)))
+        # exit(0)
+
         test_itemage = self.get_itemage(self.test['ItemId'], self.test['timestamp'])
         self.test['ItemAge'] = test_itemage
+        if self.n_bins is not None:
+            self.n_periods = self.n_bins
         # print(min(self.test['ItemAge']))
         # assert min(test_itemage) < self.n_periods
         
@@ -69,13 +79,15 @@ class Dataset(object):
 
     def _get_item_birthdate(self):
         item_birthdate = np.zeros(self.n_items, dtype='int64')
-        for i, group in self.train_full.groupby(['ItemId']):
+        d = pd.concat([self.train_full, self.test], ignore_index=True)
+        for i, group in d.groupby(['ItemId']):
             item_birthdate[i] = min(group['timestamp'].to_list())
         return item_birthdate
     
     def get_itemage(self, items, timestamp, item_birthdate = None, del_young_items=False):
         unit = self.period_type
-        max_period = self.n_periods - 1
+        # max_period = self.n_periods - 1
+        max_period = self.max_period
         '''
         # time info
         max_month = 5 * 12 - 1 # 5 years
@@ -93,16 +105,33 @@ class Dataset(object):
         if item_birthdate is not None:
             item_pt = item_birthdate[items]
             itemage = ((timestamp - item_pt) * 1.0 / period_second).int().clip(0, max_period)
-            if del_young_items:
-                itemage[(timestamp - item_pt) < 0] = -1
+            # if del_young_items:
+            #     itemage[(timestamp - item_pt) < 0] = -1
         else:
             item_pt = self.item_birthdate[items]
             # print(((timestamp - item_pt) * 1.0 / period_second))
             # exit(0)
             itemage = ((timestamp - item_pt) * 1.0 / period_second).astype(int).clip(0, max_period)
-            if del_young_items:
-                itemage[(timestamp - item_pt) < 0] = -1
+            # print(np.unique(itemage, return_counts=True))
+            # if del_young_items:
+            #     itemage[(timestamp - item_pt) < 0] = -1
             assert len(itemage) == len(items)
+        
+        # # use bins to map the itemage
+        print('max_period:', max_period)
+        if self.dataset == 'ml-latest-small':
+            itemage_ = np.copy(itemage)
+            bins = [-1] + [0, 2, 4, 7, 10, 14, 20]
+            print("---------- Using Bins: ", bins[1:], "----------")
+            replaces = np.arange(len(bins) - 1)
+            for bidx in range(1, len(bins)):
+                b = list(range(bins[bidx-1]+1, bins[bidx]+1))
+                itemage_[itemage.isin(b)] = replaces[bidx - 1]
+            self.n_bins = min(self.n_periods, len(replaces))
+            # print(np.unique(itemage, return_counts=True))
+            # print(np.unique(itemage_, return_counts=True), '\n')
+            # exit(0)
+            return itemage_
         return itemage
 
     def merge_predOP(self, train):
@@ -129,4 +158,22 @@ class Dataset(object):
         # print(len(output), len(train))
         # assert len(output) == len(train)
         return output
+
+    def resplitting_random(self, ratio = 0.25):
+        # # combine train_full and test as a whole dataset
+        df = pd.concat([self.train_full, self.test], ignore_index=True)
+        # # random splitting by user
+        df_train, df_test = [], []
+        np.random.seed(2021)
+        for (u, group) in df.groupby(['UserId']):
+            group_ = group.sample(frac=1)
+            n_test = int(0.25 * len(group_))
+            df_train.append(group_[:-n_test])
+            df_test.append(group_[-n_test:])
+
+        self.train_full = pd.concat(df_train, axis=0)
+        self.test = pd.concat(df_test, axis=0)
+        print("Saving randomly-splitted dataset. Done.")
+        self.train_full.to_csv(self.path + self.dataset + '/train_random.csv', index=False)
+        self.test.to_csv(self.path + self.dataset + '/test_random.csv', index=False)
 

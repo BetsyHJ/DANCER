@@ -795,6 +795,7 @@ class OP_Trainer(AbstractTrainer):
             scores.append(self.model.predict(interaction_batch))
             total_loss += losses.item()
         scores = torch.cat(scores, 0)
+        # scores.clip(min(target), max(target)) # clip the output scores
         return total_loss, scores
     
     @torch.no_grad()
@@ -835,10 +836,14 @@ class OPPT_Trainer(AbstractTrainer):
     '''
     def __init__(self, config, model, data):
         super(OPPT_Trainer, self).__init__(config, model, data)
-
-        self.optimizer = config['optimizer']
-        self.saved_model_file = "./checkpoint_dir/OPPT_" + config['dataset'] + '_' + config['mode']
+        if config['debiasing']:
+            self.debiasing = "_ips"
+        else:
+            self.debiasing = '_naive'
+        self.saved_model_file = "./checkpoint_dir/OPPT_" + config['dataset'] + '_' + config['mode'] + self.debiasing
         print("model will be saved into:", self.saved_model_file)
+        
+        self.optimizer = config['optimizer']
         self.epochs = config['epochs']
         self.batch_size = int(config['batch_size'])
         self.n_users = self.data.n_users
@@ -855,7 +860,6 @@ class OPPT_Trainer(AbstractTrainer):
         print("Training with Negative-Sampling: %s based" % self.ns_type)
         # # np.random.seed only control the train-test-splitting
         # torch.manual_seed(517)
-        np.random.seed(517)
         
     def _data_pre(self, train):
         '''
@@ -905,8 +909,10 @@ class OPPT_Trainer(AbstractTrainer):
                 'item': item[start_idx:end_idx], 'target': target[start_idx:end_idx], \
                 'itemage': itemage[start_idx:end_idx]})
             # In task OPPT, the reduction of calculate_loss is none, then ...
-            # losses = torch.mul(losses, predOP[start_idx:end_idx]).sum()
-            losses = losses.mean()
+            if self.debiasing:
+                losses = torch.mul(losses, predOP[start_idx:end_idx]).sum() # w/ P(O)
+            else:
+                losses = losses.mean() # /o P(O)
             total_loss += losses.item()
             losses.backward()
             self.optimizer.step()
@@ -916,7 +922,10 @@ class OPPT_Trainer(AbstractTrainer):
 
     def fit(self, valid_data=None, verbose=True, saved=True, resampling=True):
         interaction = self._data_pre(self.train)
-        interaction, interaction_valid = self.train_valid_split(interaction)
+        interaction, interaction_valid = self.train_valid_split(interaction, sampling=0.05)
+        # print('sjdhaksdhjsdhakhdhsjadh')
+        # interaction_valid = interaction
+
         start = time()
         for epoch_idx in range(self.epochs):
             if resampling:
@@ -935,10 +944,11 @@ class OPPT_Trainer(AbstractTrainer):
                 start = time()
         return self.model
 
-    def train_valid_split(self, interaction, sampling=0.25):
+    def train_valid_split(self, interaction, sampling=0.1):
         num = interaction['num']
+        np.random.seed(2021)
         indices = np.random.uniform(size=num)
-        train_idx = indices >= 0.25
+        train_idx = indices >= sampling
         valid_idx = np.invert(train_idx)
         num_train, num_valid = (train_idx).sum(), (valid_idx).sum()
         assert (num_train + num_valid) == num
@@ -981,13 +991,20 @@ class OPPT_Trainer(AbstractTrainer):
             interaction_batch = {'user': user[start_idx:end_idx], \
                 'item': item[start_idx:end_idx], 'target': target[start_idx:end_idx], 'itemage': itemage[start_idx:end_idx]}
             losses = self.model.calculate_loss(interaction_batch)
-            # losses = torch.mul(losses, predOP[start_idx: end_idx]).sum()
-            losses = losses.mean()
+            if self.debiasing:
+                losses = torch.mul(losses, predOP[start_idx: end_idx]).sum() # w/ P(O)
+            else:
+                losses = losses.mean() # /o P(O)
             total_loss += losses.item()
             scores.append(self.model.predict(interaction_batch))
             start_idx = end_idx
             end_idx += self.batch_size
         scores = torch.cat(scores, 0)
+        # scores.clip(min(target), max(target)) # clip the output scores
+        # scores = scores * 0 + 3.514037
+
+        # preds_ = np.stack((target.cpu().numpy(), scores.cpu().numpy(), np.zeros_like(scores.cpu().numpy())+3.514037),axis=1)
+        # np.savetxt('preds_onValid.csv', preds_)
         return total_loss, scores
     
     

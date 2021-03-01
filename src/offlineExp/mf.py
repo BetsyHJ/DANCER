@@ -103,10 +103,17 @@ class MF(nn.Module):
         scores = torch.matmul(self.user_embedding(user), test_items_emb.transpose(0, 1))  # [B D], [D N] -> [B N]
         return scores
 
-
 class MF_dnn(MF):
     def __init__(self, config, data, debiasing=False):
         super(MF_dnn, self).__init__(config, data, debiasing)
+        # self.dense = nn.Linear(1, 1)
+        self.b = Parameter(torch.Tensor(1))
+        # self.w = Parameter(torch.Tensor(1))
+
+
+class MF_v(MF):
+    def __init__(self, config, data, debiasing=False):
+        super(MF_v, self).__init__(config, data, debiasing)
         # self.dense = nn.Linear(1, 1)
         self.b = Parameter(torch.Tensor(1))
         # self.w = Parameter(torch.Tensor(1))

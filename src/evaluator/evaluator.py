@@ -56,22 +56,22 @@ def _mse(pred, true):
 def _mae(pred, true):
     return np.absolute(true - pred).mean()
 def _acc(pred, true):
-    if (min(true) == 0.0) and (max(true) == 1.0):        
+    if (true > 1).sum() == 0:        
         pred = np.round(pred).astype(int)
     return (pred == true).mean()
 
 def cal_ratpred_metrics(score, target):
-    # for ml-100K, ratings are 1, 2, 3, 4, 5
-    score = score.clip(min(target), max(target))
-    score_ = np.round(score).astype(int)
-    
-    # # since in target, 0.5, 1.0, 1.5, ..., 4.5, 5.0
-    # target = target * 2 # 1, 2, 3, ..., 9, 10
-    # score = score * 2
+    # # for ml-100K, ratings are 1, 2, 3, 4, 5
     # score = score.clip(min(target), max(target))
-    # score_ = np.round(score).astype(int) * 1.0 / 2
-    # score /= 2.0
-    # target /= 2.0
+    # score_ = np.round(score).astype(int)
+    
+    # since in target, 0.5, 1.0, 1.5, ..., 4.5, 5.0
+    target = target * 2 # 1, 2, 3, ..., 9, 10
+    score = score * 2
+    score = score.clip(min(target), max(target))
+    score_ = np.round(score).astype(int) * 1.0 / 2
+    score /= 2.0
+    target /= 2.0
 
     results = {}
     results['mse'] = _mse(score, target)
@@ -88,8 +88,8 @@ def _perplexity(score, true):
     return np.power(2, -nll_score.mean())
 def cal_op_metrics(score, target, w_sigmoid=True):
     # score_ = score.copy()
-    if w_sigmoid:
-        score = 1.0 / (1.0 + np.exp(-score)) # sigmoid(score)
+    # if w_sigmoid:
+    #     score = 1.0 / (1.0 + np.exp(-score)) # sigmoid(score)
     score = score.clip(0.000001, 0.999999)
     # if (score == 1.0).sum() + (score == 0.0).sum() > 0:
     #     print(score_[score == 1.0], score_[score==0.0])
@@ -421,7 +421,7 @@ class OP_Evaluator(AbstractEvaluator):
         
     @torch.no_grad() 
     def evaluate(self, ub='false', threshold=1e-3, baselines = None, subset = None):
-        self._save_pred_OP()
+        # self._save_pred_OP()
 
         torch.manual_seed(517)
         np.random.seed(517)
@@ -505,8 +505,8 @@ class OP_Evaluator(AbstractEvaluator):
         subset: the evaluation subset, if None we use all pos+negs, if pos we only use pos, else only negs
         '''
         # train only contains positives
-        # train = self.data.train_full
-        train = self.data.train
+        train = self.data.train_full
+        # train = self.data.train
         w_sigmoid = False # do not do sigmoid later in cal_op_metrics
         targets = interaction['target']
         if subset is not None:
@@ -526,15 +526,15 @@ class OP_Evaluator(AbstractEvaluator):
         if variety == 1:
             print("****** Note we want to know what happened if we give all the predicted scores %.6f" % (scores[0].cpu()))
         elif variety == 2:
-            # scores += 0.004
-            scores += targets.cpu().numpy().mean()
+            scores += 0.012686
+            # scores += targets.cpu().numpy().mean()
             # scores += len(train) * 1.0 / (self.n_users * self.n_items  * self.n_periods)
             print("****** Note we want to know what happened if we give all the predicted scores %.6f" % (scores[0].cpu()))
         elif variety == 3:
             scores_T = []
             itemages = interaction['itemage']
             num_D = self.n_users * self.n_items
-            norm = 2 #0.1 / 0.013641
+            norm = 2.5 #0.1 / 0.013641
             print("We do normalization: %f" % norm)
             for T in range(self.n_periods):
                 # # calculate in training set
@@ -659,30 +659,68 @@ class OPPT_Evaluator(OP_Evaluator):
     @torch.no_grad() 
     def evaluate(self, ub='false', threshold=1e-3, baselines = None, subset = None):
         interaction = self._data_pre_next_month()
-        scores = self._eval_epoch(interaction)
+        if baselines is not None:
+            scores = self.baselines(interaction, variety=int(baselines[1]))
+        else:
+            scores = self._eval_epoch(interaction)
         targets = interaction['target']
         results = cal_ratpred_metrics(scores.cpu().numpy(), targets.cpu().numpy())
         print('\t'.join(results.keys()), '\n', '\t'.join([str(x) for x in results.values()]))
 
         self._save_something(preds=scores.cpu().numpy())
+        # mses_ = (scores.cpu().numpy() - targets.cpu().numpy()) ** 2
+        # idx = mses_ >= 4
+        # uids = interaction['user'][idx]#.cpu().numpy()[:5]
+        # iids = interaction['item'][idx]#.cpu().numpy()[:5]
+        # # print("users: ", uids, '\nitems:', iids, '\nmse:', mses_[idx][:5])
+        # print("users: ", uids.unique(return_counts=True), '\nitems:', iids.unique(return_counts=True))
+        # exit(0)
+
         # # evaluate it as a ranking task
         # results = cal_ob_pred2ranking_metrics(interaction, scores)
         # print('\t'.join(results.keys()), '\n', '\t'.join([str(x) for x in results.values()]))
         # # print("results on testset: %s" % (str(results)))
         return results
 
+    
+    def baselines(self, interaction, variety=1):
+        '''some simple baseline variety
+        B2: all scores equal to a fixed value, avg-ratings over all.
+        B3: scores for (u, i) at T equal to a fixed value (diff at diff T), avg-ratings at T
+        '''
+        train = self.data.train_full
+        targets = interaction['target']
+        scores = torch.zeros_like(targets).float().to(self.device)
+        if variety == 2:
+            scores += train['rating'].mean()
+            print("****** Note we want to know what happened if we give all the predicted scores %.6f" % (scores[0].cpu()))
+        elif variety == 3:
+            scores_T = []
+            itemages = interaction['itemage']
+            for T in range(self.n_periods):
+                # # calculate in training set
+                # s_T = train[train['ItemAge'] == T]['rating'].mean()
+                # # calculate in test set
+                s_T = targets[itemages == T].cpu().numpy().mean()
+                scores[itemages == T] = s_T
+                scores_T.append(s_T)
+            print("****** Note we want to know what happened if we give all the predicted scores %s" % str(scores_T))
+        return scores
+
     def _save_something(self, preds=None, target=None):
         # # only for tmf_v w/ global_offset_T
         # global_offset_T = self.model.global_T.weight.data.cpu().numpy().squeeze()
         # print(global_offset_T)
         # # look at the distributions on the preds per T
+        preds = np.round(preds).astype(int)
         print(len(preds), len(self.test))
         age = np.arange(self.data.n_periods)
         avg_T = []
         for T in age:
             # print(self.test['ItemAge'] == T)
             avg_T.append((preds[(self.test['ItemAge'] == T).values]).mean())
-        print(avg_T)
+        print(avg_T, preds.mean())
+        print(self.test['ItemAge'].unique())
         # preds = preds.clip(min(targets), max(targets))
         # preds = np.round(preds * 2) / 2.0
         # self.test['pred'] = preds
