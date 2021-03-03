@@ -620,7 +620,8 @@ class OPPT_Evaluator(OP_Evaluator):
         super(OPPT_Evaluator, self).__init__(config, model, data)
     
     def _data_pre_next_month(self):
-        self.test = self._filter_test_next_month()
+        self.test = self.data.test
+        # self.test = self._filter_test_next_month()
         test = self.test
         uid_list = torch.from_numpy(np.array(test['UserId'].values, dtype=int)).to(self.device)
         iid_list = torch.from_numpy(np.array(test['ItemId'].values, dtype=int)).to(self.device)
