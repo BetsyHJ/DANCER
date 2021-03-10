@@ -1,5 +1,6 @@
 import numpy as np
 import pandas as pd
+import os
 
 class Dataset(object):
     def __init__(self, config, task='OIPT'):
@@ -11,12 +12,16 @@ class Dataset(object):
         # load data
         self.train_full = self._load_ratings(path + dataset + '/train.csv')
         self.test = self._load_ratings(path + dataset + '/test.csv')
+        # # for task OPPT, we do randomly training-test splitting
+        if task == 'OPPT':
+            self.resplitting_random()
+        
+        # # add the predicted p(o) for task 2
         if task == 'OPPT': # "Observed user preference prediction task", add the predicted p(o) for task 2
             self.train_full = self.merge_predOP(self.train_full)
             self.test = self.merge_predOP(self.test)
             print("Load predOP (P(O)) done.")
-        # print("Here333333", self.train_full.columns)
-        # print("Here333333", self.test.columns)
+
         self.n_items = max(self.train_full['ItemId']) + 1
         self.n_users = max(self.train_full['UserId']) + 1
         
@@ -46,31 +51,30 @@ class Dataset(object):
         self.test = self.test.drop(self.test[~self.test['ItemId'].isin(self.train_full['ItemId'].unique())].index)
         print("Drop the items appearing in training set but not in test. Nr %d" % (n_test - len(self.test)))
         # exit(0)
-
         test_itemage = self.get_itemage(self.test['ItemId'], self.test['timestamp'])
         self.test['ItemAge'] = test_itemage
         if self.n_bins is not None:
             self.n_periods = self.n_bins
-        # print(min(self.test['ItemAge']))
-        # assert min(test_itemage) < self.n_periods
         
-        # get train and valid set
-        df_train, df_valid = [], []
-        for u, group in self.train_full.groupby(['UserId']):
-            sorted_ratings = group.sort_values('timestamp', ascending=True)
-            # # leave-one-out
-            # df_train.append(sorted_ratings[:-1])
-            # df_valid.append(sorted_ratings[-1:])
-            # # user center, time-dependent, proportion
-            n_valid = int(0.25 * len(sorted_ratings))
-            df_train.append(sorted_ratings[:-n_valid])
-            df_valid.append(sorted_ratings[-n_valid:])
-
-        self.train = pd.concat(df_train, axis=0)
-        self.valid = pd.concat(df_valid, axis=0)
+        # # get train and valid set
+        # df_train, df_valid = [], []
+        # for u, group in self.train_full.groupby(['UserId']):
+        #     sorted_ratings = group.sort_values('timestamp', ascending=True)
+        #     # # leave-one-out
+        #     # df_train.append(sorted_ratings[:-1])
+        #     # df_valid.append(sorted_ratings[-1:])
+        #     # # user center, time-dependent, proportion
+        #     n_valid = int(0.25 * len(sorted_ratings))
+        #     df_train.append(sorted_ratings[:-n_valid])
+        #     df_valid.append(sorted_ratings[-n_valid:])
+        # self.train = pd.concat(df_train, axis=0)
+        # self.valid = pd.concat(df_valid, axis=0)
 
         # basic info
         print("(#users : %d, #items : %d, period_type : %s, n_periods : %d)" % (self.n_users, self.n_items, self.period_type, self.n_periods))
+        # self.train_full.to_csv('train_random-del.csv', index=False)
+        # self.test.to_csv('test_random-del.csv', index=False)
+        # exit(0)
 
     def _load_ratings(self, ratingfile, sep = ','):
         ratings = pd.read_csv(ratingfile, sep=sep, header=0)
@@ -160,6 +164,16 @@ class Dataset(object):
         return output
 
     def resplitting_random(self, ratio = 0.25):
+        if os.path.exists(self.path + self.dataset + '/train_random.csv'):
+            self.train_full = self._load_ratings(self.path + self.dataset + '/train_random.csv')
+            self.test = self._load_ratings(self.path + self.dataset + '/test_random.csv')
+            # only keep ['UserId', 'ItemId', 'rating', 'timestamp']
+            cols = ['UserId', 'ItemId', 'rating', 'timestamp']
+            self.train_full = self.train_full[cols]
+            self.test = self.test[cols]
+            print("Loading randomly-splitted training and test set. Done.")
+            return
+        print("Generate the random-splitted training/test set.")
         # # combine train_full and test as a whole dataset
         df = pd.concat([self.train_full, self.test], ignore_index=True)
         # # random splitting by user
@@ -167,13 +181,17 @@ class Dataset(object):
         np.random.seed(2021)
         for (u, group) in df.groupby(['UserId']):
             group_ = group.sample(frac=1)
-            n_test = int(0.25 * len(group_))
+            n_test = int(ratio * len(group_))
             df_train.append(group_[:-n_test])
             df_test.append(group_[-n_test:])
 
         self.train_full = pd.concat(df_train, axis=0)
         self.test = pd.concat(df_test, axis=0)
-        print("Saving randomly-splitted dataset. Done.")
+        # only keep ['UserId', 'ItemId', 'rating', 'timestamp']
+        cols = ['UserId', 'ItemId', 'rating', 'timestamp']
+        self.train_full = self.train_full[cols]
+        self.test = self.test[cols]
         self.train_full.to_csv(self.path + self.dataset + '/train_random.csv', index=False)
         self.test.to_csv(self.path + self.dataset + '/test_random.csv', index=False)
+        print("Saving randomly-splitted dataset. Done.")
 

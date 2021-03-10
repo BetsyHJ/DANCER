@@ -1,6 +1,7 @@
 import torch
 from torch import nn
 from torch.nn.init import xavier_uniform_, xavier_normal_
+from torch.nn.parameter import Parameter
 
 class TF(nn.Module):
     '''
@@ -55,8 +56,11 @@ class TF(nn.Module):
         elif isinstance(module, nn.GRU):
             xavier_uniform_(self.gru_layers.weight_hh_l0)
             xavier_uniform_(self.gru_layers.weight_ih_l0)
-        # elif isinstance(module, nn.Linear):
-        #     xavier_uniform_(module.weight)
+        elif isinstance(module, nn.Linear):
+            xavier_normal_(module.weight)
+            constant_(module.bias, 0.0)
+        elif isinstance(module, Parameter):
+            constant_(module.weight, 0.0)
     
     def _gather_indexes(self, output, gather_index):
         """Gathers the vectors at the spexific positions over a minibatch"""

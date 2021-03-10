@@ -74,8 +74,6 @@ def run_dqn():
     _logging_(conf, config)
     ## loading data
     data = Dataset(conf, task=task)
-    print("********* Training/test splitting: random (using re-splitting) **********")
-    data.resplitting_random(ratio=0.25)
     # ctr = data.train['ctr']
     
     # Super simple baselines just need some statistic info without training process.
@@ -156,16 +154,32 @@ def load_parameters(mode):
     config = configparser.ConfigParser()
     if 'tmf_fast_v' in mode.lower():
         mode = 'tmf_fast'
-    elif 'mf_v' in mode.lower():
-        mode = 'mf'
     elif 'tmf_v' in mode.lower():
         mode = 'tmf'
+    elif 'mf_v' in mode.lower():
+        mode = 'mf'
     elif mode[0] == 'b':
         return {}
     config.read("../conf/"+mode+".properties")
     conf=dict(config.items("hyperparameters"))
+    # for multiple jobs in 
+    args = set_hparams()
+    if args.lr is not None:
+        conf["learning_rate"] = args.lr
+    if args.reg is not None:
+        conf['l2_reg'] = args.reg
     return conf
-    
+
+def set_hparams():
+    import argparse
+    parser = argparse.ArgumentParser()
+    # parser.add_argument('--seed', type=int)
+    parser.add_argument('--lr', type=float, default=None)
+    parser.add_argument('--reg', type=float, default=None)
+    args = parser.parse_args()
+    print("now lr is", args.lr, ", and reg is", args.reg, flush=True)
+    # np.random.seed(args.seed)
+    return args
 
 if __name__ == "__main__":
     run_dqn()

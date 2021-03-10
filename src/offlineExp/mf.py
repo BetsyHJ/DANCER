@@ -58,8 +58,11 @@ class MF(nn.Module):
         elif isinstance(module, nn.GRU):
             xavier_uniform_(self.gru_layers.weight_hh_l0)
             xavier_uniform_(self.gru_layers.weight_ih_l0)
-        # elif isinstance(module, nn.Linear):
-        #     xavier_uniform_(module.weight)
+        elif isinstance(module, nn.Linear):
+            xavier_normal_(module.weight)
+            constant_(module.bias, 0.0)
+        elif isinstance(module, Parameter):
+            constant_(module.weight, 0.0)
     
     def _gather_indexes(self, output, gather_index):
         """Gathers the vectors at the spexific positions over a minibatch"""
@@ -116,7 +119,11 @@ class MF_v(MF):
         super(MF_v, self).__init__(config, data, debiasing)
         # self.dense = nn.Linear(1, 1)
         self.b = Parameter(torch.Tensor(1))
+        self.b_u = nn.Embedding(self.n_users, 1)
+        self.b_i = nn.Embedding(self.n_items, 1)
         # self.w = Parameter(torch.Tensor(1))
+        self.apply(self._init_weights)
+        print('-*-*-*-* We use s_{uit} = v_u * v_i + b + b_u + b_i *-*-*-*-')
 
     def forward(self, user, item):
         user_e = self.user_embedding(user)
@@ -125,5 +132,7 @@ class MF_v(MF):
         # # W * v_u * v_i + b
         # f_uit = self.dense(r_ui.unsqueeze(1)).squeeze().float() # [B]
         # # v_u * v_i + b
-        f_uit = r_ui + self.b
+        # f_uit = r_ui + self.b
+        # # v_u * v_i + b_u + b_i + b
+        f_uit = r_ui + self.b + self.b_u(user).squeeze() + self.b_i(item).squeeze()
         return f_uit

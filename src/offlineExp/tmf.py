@@ -1,6 +1,6 @@
 import torch
 from torch import nn
-from torch.nn.init import xavier_uniform_, xavier_normal_
+from torch.nn.init import xavier_uniform_, xavier_normal_, constant_
 from torch.nn.parameter import Parameter
 
 class TMF(nn.Module):
@@ -31,7 +31,7 @@ class TMF(nn.Module):
         # self.item_Dyn_embedding = [] # [T N D]
         # for t in range(self.n_periods):
         #     self.item_Dyn_embedding.append(nn.Embedding(self.n_items, self.embedding_size))
-        
+
         self.m = None
         reduction = 'mean'
         if self.task == 'OPPT':
@@ -40,7 +40,7 @@ class TMF(nn.Module):
             if self.debiasing:
                 self.loss_fct = nn.CrossEntropyLoss(reduction='none')
             else:
-                self.loss_fct = nn.CrossEntropyLoss(reduction)
+                self.loss_fct = nn.CrossEntropyLoss()
         elif self.loss_type.upper() == 'MSE':
             self.loss_fct = nn.MSELoss(reduction)
         elif self.loss_type.upper() == 'NLL':
@@ -62,8 +62,11 @@ class TMF(nn.Module):
         elif isinstance(module, nn.GRU):
             xavier_uniform_(self.gru_layers.weight_hh_l0)
             xavier_uniform_(self.gru_layers.weight_ih_l0)
-        # elif isinstance(module, nn.Linear):
-        #     xavier_uniform_(module.weight)
+        elif isinstance(module, nn.Linear):
+            xavier_normal_(module.weight)
+            constant_(module.bias, 0.0)
+        elif isinstance(module, Parameter):
+            constant_(module.weight, 0.0)
     
     def _gather_indexes(self, output, gather_index):
         """Gathers the vectors at the spexific positions over a minibatch"""
@@ -118,8 +121,12 @@ class TMF_variety(TMF):
     '''
     def __init__(self, config, data, debiasing=False, output_dim=2):
         super(TMF_variety, self).__init__(config, data, debiasing=False, output_dim=2)
-        print("********* Using TMF-variety: add global-offset_T **********")
+        print("********* Using TMF-variety: (v_u * v_i) + b + b_i + b_u + b_T **********")
+        self.b_u = nn.Embedding(self.n_users, 1)
+        self.b_i = nn.Embedding(self.n_items, 1)
         self.global_T = nn.Embedding(self.n_periods, 1)
+        self.b = Parameter(torch.Tensor(1))
+        self.apply(self._init_weights)
         
     def forward(self, user, item, itemage):
         user_e = self.user_embedding(user)
@@ -129,7 +136,7 @@ class TMF_variety(TMF):
         # [B 1]
         # # p1 + b
         # f_uit = torch.mul(torch.mul(r_ui, itemage), self.w) # + self.b
-        f_uit = r_ui + self.global_T(itemage).squeeze()
+        f_uit = r_ui + self.b + self.b_u(user).squeeze() + self.b_i(item).squeeze() + self.global_T(itemage).squeeze()
         if self.m is None:
             return f_uit
         return self.m(f_uit) # [B, D] -> [B]
@@ -149,6 +156,7 @@ class TMF_fast(TMF):
         self.dense = nn.Linear(1, 1)
         # # self.b = Parameter(torch.Tensor(1))
         # self.w = Parameter(torch.Tensor(1))
+        self.apply(self._init_weights)
 
     def forward(self, user, item, itemage):
         user_e = self.user_embedding(user)
@@ -161,7 +169,7 @@ class TMF_fast(TMF):
         f_uit = self.m(f_uit)
         return f_uit # [B, D] -> [B]
 
-class TMF_fast_variety(TMF_fast):
+class TMF_fast_variety(TMF):
     '''
     Modified time-aware matrix factorization
     s_{u,i} = p_u * q_i
@@ -172,14 +180,15 @@ class TMF_fast_variety(TMF_fast):
         super(TMF_fast_variety, self).__init__(config, data, debiasing)
         # del useless params
         self.user_embedding, self.item_embedding = None, None
+        self.item_Dyn_embedding = None
         self.dense = None
-        self.dense = nn.Linear(1, 1)
+        # self.dense = nn.Linear(1, 1)
         # self.dense = nn.Linear(2, 1)
         # self.W1 = Parameter(torch.Tensor(1))
         # self.W2 = Parameter(torch.Tensor(1))
         # self.b = Parameter(torch.Tensor(1))
 
-        # # define layers and loss
+        # define layers and loss
         # self.n_factors = 2
         # if self.n_factors == 2:
         #     # print("TMF_fast_variety2: sigmoid(p1 * T1 + p2)")
@@ -190,7 +199,19 @@ class TMF_fast_variety(TMF_fast):
         self.n_factors = 1
         self.user_embedding = nn.Embedding(self.n_users * self.n_factors, self.embedding_size)
         self.item_embedding = nn.Embedding(self.n_items * self.n_factors, self.embedding_size)
+        self.b_u = nn.Embedding(self.n_users, 1)
+        self.b_i = nn.Embedding(self.n_items, 1)
+        self.global_T = nn.Embedding(self.n_periods, 1)
+        self.b = Parameter(torch.Tensor(self.n_factors))
+
+        d_p2 = 2
+        self.user_embedding2 = nn.Embedding(self.n_users, d_p2)
+        self.item_embedding2 = nn.Embedding(self.n_items, d_p2)
+        self.b2 = Parameter(torch.Tensor(1))
         self.itemage_embedding  = nn.Embedding(self.n_periods, 1)
+        # self.itemage_embedding = nn.Embedding(self.n_periods, self.embedding_size)
+
+        # self.item_embedding_ = nn.Embedding(self.n_items, self.embedding_size)
 
         # # NLL using BinaryCrossEntropy with sigmoid
         # # self.loss_fct = nn.BCEWithLogitsLoss()
@@ -203,23 +224,40 @@ class TMF_fast_variety(TMF_fast):
         # print("-*-*-*-* We use Gaussian: e^(-x^2) *-*-*-*-")
         # print("-*-*-*-* We use p_T = sigmoid(s_T) *-*-*-*-")
         # print("-*-*-*-* We use p_T = sigmoid(W*T+b) *-*-*-*-")
-        print("-*-*-*-* We use p_T = sigmoid(p1*s_T) *-*-*-*-")
+        # print("-*-*-*-* We use p_T = sigmoid(p1*s_T) *-*-*-*-")
+        # # for OPPT task
+        # print("-*-*-*-* We use s_\{uit\} = p1 + (v_i * v_T) *-*-*-*-")
+        print("-*-*-*-* We use s_{uit} = p1 + b1 + (p2^{d=2} + b2) * s_T *-*-*-*-")
+        self.apply(self._init_weights)
 
     def forward(self, user, item, itemage):
+        # user_e = self.user_embedding(user)
+        # item_e = self.item_embedding(item)
+        # output = torch.mul(user_e, item_e).sum(-1).float() # [B, D] -> [B]
+
         prob_scores = [] # s1, s2, ...
         for i in range(self.n_factors):
             prob_scores.append(torch.mul(self.user_embedding(self.n_users * i + user), \
-                    self.item_embedding(self.n_items * i + item)).sum(-1).float()) # [B]
+                    self.item_embedding(self.n_items * i + item)).sum(-1).float()  + self.b[i]) # [B]
+        # # p1 + p2^{d=1} * T
+        p2 = torch.mul(self.user_embedding2(user), self.item_embedding2(item)).sum(-1).float() + self.b2
+        output = (torch.mul(p2, self.itemage_embedding(itemage).squeeze().float()) \
+                 + prob_scores[0]).squeeze().float() + self.global_T(itemage).squeeze()
         # # p1 * T1 + p2
-        # output = (torch.mul(prob_scores[0], itemage) + prob_scores[1]).squeeze().float()
+        # output = (torch.mul(prob_scores[1], itemage) + prob_scores[0]).squeeze().float()
+        # # p1 * s_T + p2
+        # output = (torch.mul(prob_scores[0], self.itemage_embedding(itemage).squeeze().float()) + prob_scores[1]).squeeze().float()
+        # # p1 + v_i * v_T
+        # output = prob_scores[0] + torch.mul(self.itemage_embedding(itemage), self.item_embedding_(item)).sum(-1).float()
         # # W1 * p1 * T1 + W2 * p2 + b
         # p1 = torch.mul(prob_scores[0], itemage).unsqueeze(1)
         # p2 = prob_scores[1].unsqueeze(1)
         # output = self.dense(torch.cat((p1, p2), 1)).squeeze().float()
         # output = (self.W1 * torch.mul(prob_scores[0], itemage) + self.W2 * prob_scores[1] + self.b).squeeze().float()
         # # sigmoid(P1 * s_T)
-        output = torch.mul(prob_scores[0], self.itemage_embedding(itemage).squeeze().float())
-        output = self.m(output)
+        # output = torch.mul(prob_scores[0], self.itemage_embedding(itemage).squeeze().float())
+        if self.m is not None:
+            output = self.m(output)
         # # W * T + b
         # output = self.dense(itemage.float().unsqueeze(1)).squeeze().float()
         # output = self.m(output)

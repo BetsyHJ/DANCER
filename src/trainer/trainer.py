@@ -909,7 +909,7 @@ class OPPT_Trainer(AbstractTrainer):
                 'item': item[start_idx:end_idx], 'target': target[start_idx:end_idx], \
                 'itemage': itemage[start_idx:end_idx]})
             # In task OPPT, the reduction of calculate_loss is none, then ...
-            if self.debiasing:
+            if 'naive' not in self.debiasing.lower():
                 losses = torch.mul(losses, predOP[start_idx:end_idx]).sum() # w/ P(O)
             else:
                 losses = losses.mean() # /o P(O)
@@ -923,7 +923,8 @@ class OPPT_Trainer(AbstractTrainer):
     def fit(self, valid_data=None, verbose=True, saved=True, resampling=True):
         interaction = self._data_pre(self.train)
         interaction, interaction_valid = self.train_valid_split(interaction, sampling=0.05)
-        # print('sjdhaksdhjsdhakhdhsjadh')
+        # print(self.model.state_dict().keys())
+        # exit(0)
         # interaction_valid = interaction
 
         start = time()
@@ -999,6 +1000,7 @@ class OPPT_Trainer(AbstractTrainer):
             scores.append(self.model.predict(interaction_batch))
             start_idx = end_idx
             end_idx += self.batch_size
+            # print(scores[-1].size())
         scores = torch.cat(scores, 0)
         # scores.clip(min(target), max(target)) # clip the output scores
         # scores = scores * 0 + 3.514037
