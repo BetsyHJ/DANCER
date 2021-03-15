@@ -37,7 +37,7 @@ class MF(nn.Module):
             else:
                 self.loss_fct = nn.CrossEntropyLoss()
         elif self.loss_type.upper() == 'MSE':
-            self.loss_fct = nn.MSELoss(reduction)
+            self.loss_fct = nn.MSELoss(reduction=reduction)
         elif self.loss_type.upper() == 'NLL':
             # self.loss_fct = nn.NLLLoss(reduction='none')
             # self.loss_fct = nn.BCEWithLogitsLoss()

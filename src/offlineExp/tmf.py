@@ -42,7 +42,7 @@ class TMF(nn.Module):
             else:
                 self.loss_fct = nn.CrossEntropyLoss()
         elif self.loss_type.upper() == 'MSE':
-            self.loss_fct = nn.MSELoss(reduction)
+            self.loss_fct = nn.MSELoss(reduction=reduction)
         elif self.loss_type.upper() == 'NLL':
             # self.loss_fct = nn.NLLLoss(reduction='none')
             # self.loss_fct = nn.BCEWithLogitsLoss()
@@ -204,12 +204,17 @@ class TMF_fast_variety(TMF):
         self.global_T = nn.Embedding(self.n_periods, 1)
         self.b = Parameter(torch.Tensor(self.n_factors))
 
-        d_p2 = 2
-        self.user_embedding2 = nn.Embedding(self.n_users, d_p2)
-        self.item_embedding2 = nn.Embedding(self.n_items, d_p2)
-        self.b2 = Parameter(torch.Tensor(1))
-        self.itemage_embedding  = nn.Embedding(self.n_periods, 1)
-        # self.itemage_embedding = nn.Embedding(self.n_periods, self.embedding_size)
+        # self.a_i = nn.Embedding(self.n_items, 1)
+        self.a_u = nn.Embedding(self.n_users, 1)
+        self.s_T = nn.Embedding(self.n_periods, 1)
+
+
+        # d_p2 = 2
+        # self.user_embedding2 = nn.Embedding(self.n_users, d_p2)
+        # self.item_embedding2 = nn.Embedding(self.n_items, d_p2)
+        # self.b2 = Parameter(torch.Tensor(1))
+        # self.itemage_embedding  = nn.Embedding(self.n_periods, 1)
+        # # self.itemage_embedding = nn.Embedding(self.n_periods, self.embedding_size)
 
         # self.item_embedding_ = nn.Embedding(self.n_items, self.embedding_size)
 
@@ -227,7 +232,7 @@ class TMF_fast_variety(TMF):
         # print("-*-*-*-* We use p_T = sigmoid(p1*s_T) *-*-*-*-")
         # # for OPPT task
         # print("-*-*-*-* We use s_\{uit\} = p1 + (v_i * v_T) *-*-*-*-")
-        print("-*-*-*-* We use s_{uit} = p1 + b1 + (p2^{d=2} + b2) * s_T *-*-*-*-")
+        print("-*-*-*-* We use s_{uit} = p_ui + b_T + a_u * s_T *-*-*-*-")
         self.apply(self._init_weights)
 
     def forward(self, user, item, itemage):
@@ -240,9 +245,13 @@ class TMF_fast_variety(TMF):
             prob_scores.append(torch.mul(self.user_embedding(self.n_users * i + user), \
                     self.item_embedding(self.n_items * i + item)).sum(-1).float()  + self.b[i]) # [B]
         # # p1 + p2^{d=1} * T
-        p2 = torch.mul(self.user_embedding2(user), self.item_embedding2(item)).sum(-1).float() + self.b2
-        output = (torch.mul(p2, self.itemage_embedding(itemage).squeeze().float()) \
-                 + prob_scores[0]).squeeze().float() + self.global_T(itemage).squeeze()
+        # p2 = torch.mul(self.user_embedding2(user), self.item_embedding2(item)).sum(-1).float() + self.b2
+        # output = (torch.mul(p2, self.itemage_embedding(itemage).squeeze().float()) \
+                #  + prob_scores[0]).squeeze().float() + self.global_T(itemage).squeeze()
+        # # p_ui + b_T + a_u * s_T, where p_ui = v_u * v_i + b + b_u + b_i
+        p_ui = prob_scores[0] + self.b_u(user).squeeze() + self.b_i(item).squeeze()
+        output = p_ui + self.global_T(itemage).squeeze() + torch.mul(self.a_u(user), self.s_T(itemage)).squeeze()
+        # output = p_ui + self.global_T(itemage).squeeze() + torch.mul(self.a_u(user).squeeze(), itemage).squeeze()
         # # p1 * T1 + p2
         # output = (torch.mul(prob_scores[1], itemage) + prob_scores[0]).squeeze().float()
         # # p1 * s_T + p2

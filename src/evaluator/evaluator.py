@@ -52,15 +52,18 @@ def calculate_metrics(target_pos, weight=None, normalization='snips', threshold=
     return results
 
 def _mse(pred, true):
-    return np.mean((true - pred)**2)
+    # return np.mean((true - pred)**2)
+    return (true - pred) ** 2
 def _mae(pred, true):
-    return np.absolute(true - pred).mean()
+    # return np.absolute(true - pred).mean()
+    return np.absolute(true - pred)
 def _acc(pred, true):
     if (true > 1).sum() == 0:        
         pred = np.round(pred).astype(int)
-    return (pred == true).mean()
+    # return (pred == true).mean()
+    return (pred == true)
 
-def cal_ratpred_metrics(score, target):
+def cal_ratpred_metrics(score, target, predOP=None, users=None):
     # # for ml-100K, ratings are 1, 2, 3, 4, 5
     # score = score.clip(min(target), max(target))
     # score_ = np.round(score).astype(int)
@@ -74,17 +77,54 @@ def cal_ratpred_metrics(score, target):
     target /= 2.0
 
     results = {}
-    results['mse'] = _mse(score, target)
-    results['mae'] = _mae(score, target)
-    results['acc'] = _acc(score_, target)
+    mse = _mse(score, target)
+    mae = _mae(score, target)
+    acc = _acc(score_, target)
+    results['mse'] = np.mean(mse)
+    results['mae'] = mae.mean()
+    results['acc'] = acc.mean()
+    if predOP is not None:
+        if users is None:
+            exit(1)
+        propensities = np.reciprocal(predOP)
+        # # cal SNIPS-metric per user, then avg user
+        indices = np.argsort(users) # sort the user, do per user
+        u_unique, first_idxs = np.unique(users[indices], return_index=True)
+        n_fidxs = len(first_idxs)
+        mse_SNIPS, mae_SNIPS, acc_SNIPS = [], [], []
+        for f_idx in range(n_fidxs):
+            start = first_idxs[f_idx]
+            if f_idx == n_fidxs - 1:
+                end = len(users)
+            else:
+                end = first_idxs[f_idx+1]
+            u_group = indices[start:end]
+            prop_group = propensities[u_group]
+            prop_sum = prop_group.sum()
+            mse_SNIPS.append((mse[u_group] * prop_group).sum() / prop_sum)
+            mae_SNIPS.append((mae[u_group] * prop_group).sum() / prop_sum)
+            acc_SNIPS.append((acc[u_group] * prop_group).sum() / prop_sum)
+
+        results['mse-SNIPS'] = np.mean(mse_SNIPS)
+        results['mae-SNIPS'] = np.mean(mae_SNIPS)
+        results['acc-SNIPS'] = np.mean(acc_SNIPS)
+
+        # SNIPS = np.sum(propensities)
+        # print("acc:", acc[:100], acc[:100].mean())
+        # print("SNIPS-acc:", (acc * propensities)[:100], ((acc * propensities)[:100] / propensities[:100].sum()).sum(), propensities[:100].sum(), max(propensities[:100]))
+
+        # results['mse-SNIPS'] = (mse * propensities).sum() / SNIPS
+        # results['mae-SNIPS'] = (mae * propensities).sum() / SNIPS
+        # results['acc-SNIPS'] = (acc * propensities).sum() / SNIPS
+
     return results
 
 def _nll(score, true):
     nll_score = true * np.log(score) + (1.0-true) * np.log(1-score) 
     return - nll_score.mean()
 def _perplexity(score, true):
-    nll_score = true * score * np.log2(score) + (1.0-true) * (1-score) * np.log2(1-score) 
-    # nll_score = true * np.log2(score) + (1.0-true) * np.log2(1.0-score)
+    # nll_score = true * score * np.log2(score) + (1.0-true) * (1-score) * np.log2(1-score) 
+    nll_score = true * np.log2(score) + (1.0-true) * np.log2(1.0-score)
     return np.power(2, -nll_score.mean())
 def cal_op_metrics(score, target, w_sigmoid=True):
     # score_ = score.copy()
@@ -95,7 +135,7 @@ def cal_op_metrics(score, target, w_sigmoid=True):
     #     print(score_[score == 1.0], score_[score==0.0])
     #     exit(1)
     results = {}
-    results['acc'] = _acc(score, target)
+    results['acc'] = _acc(score, target).mean()
     results['nll'] = _nll(score, target)
     results['ppl'] = _perplexity(score, target)
     return results
@@ -445,7 +485,7 @@ class OP_Evaluator(AbstractEvaluator):
             scores, w_sigmoid, interaction = self.baselines(interaction, variety=int(baselines[1]), subset=subset) # w_sigmoid means if we should do sigmoid later in cal_op_metrics.
         else:
             scores = self._eval_epoch(interaction)
-            scores /= 3.5
+            scores /= 4
             print("The chance to generate 1 is %.6f" % ((scores>0.5).sum()*1.0 / len(scores)))
         
         # print("the max score of the probability is ", torch.max(scores))
@@ -526,7 +566,7 @@ class OP_Evaluator(AbstractEvaluator):
         if variety == 1:
             print("****** Note we want to know what happened if we give all the predicted scores %.6f" % (scores[0].cpu()))
         elif variety == 2:
-            scores += 0.012686
+            scores += 0.005
             # scores += targets.cpu().numpy().mean()
             # scores += len(train) * 1.0 / (self.n_users * self.n_items  * self.n_periods)
             print("****** Note we want to know what happened if we give all the predicted scores %.6f" % (scores[0].cpu()))
@@ -618,7 +658,8 @@ def ndcgs_(preds, denominator=None):
 class OPPT_Evaluator(OP_Evaluator):
     def __init__(self, config, model, data):
         super(OPPT_Evaluator, self).__init__(config, model, data)
-    
+        self.debiasing = config['debiasing']
+
     def _data_pre_next_month(self):
         self.test = self.data.test
         # self.test = self._filter_test_next_month()
@@ -629,6 +670,8 @@ class OPPT_Evaluator(OP_Evaluator):
         target = torch.from_numpy(test['rating'].values).to(self.device) # rating>3 like=1, <=3 dislike=0
         itemage = torch.from_numpy(np.array(test['ItemAge'].values, dtype=int)).to(self.device)
         timestamp = torch.from_numpy(np.array(test['timestamp'].values, dtype=int)).to(self.device)
+        if self.debiasing:
+            predOP = torch.from_numpy(np.array(test['predOP'].values, dtype=float)).to(self.device)
 
         interaction = {}
         interaction['user'] = uid_list
@@ -637,6 +680,8 @@ class OPPT_Evaluator(OP_Evaluator):
         interaction['itemage'] = itemage
         interaction['timestamp'] = timestamp
         interaction['num'] = uid_list.size()[0]
+        if self.debiasing:
+            interaction['predOP'] = predOP
         return interaction
     
     @torch.no_grad()
@@ -665,7 +710,10 @@ class OPPT_Evaluator(OP_Evaluator):
         else:
             scores = self._eval_epoch(interaction)
         targets = interaction['target']
-        results = cal_ratpred_metrics(scores.cpu().numpy(), targets.cpu().numpy())
+        predOP = None
+        if self.debiasing:
+            predOP = interaction['predOP'].cpu().numpy()
+        results = cal_ratpred_metrics(scores.cpu().numpy(), targets.cpu().numpy(), predOP = predOP, users = interaction['user'].cpu().numpy())
         print('\t'.join(results.keys()), '\n', '\t'.join([str(x) for x in results.values()]))
 
         self._save_something(preds=scores.cpu().numpy())
@@ -722,6 +770,7 @@ class OPPT_Evaluator(OP_Evaluator):
             avg_T.append((preds[(self.test['ItemAge'] == T).values]).mean())
         print(avg_T, preds.mean())
         print(self.test['ItemAge'].unique())
+        print("Value of s_T:", self.model.s_T.weight.squeeze().cpu())
         # preds = preds.clip(min(targets), max(targets))
         # preds = np.round(preds * 2) / 2.0
         # self.test['pred'] = preds

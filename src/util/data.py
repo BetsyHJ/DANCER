@@ -121,21 +121,21 @@ class Dataset(object):
             #     itemage[(timestamp - item_pt) < 0] = -1
             assert len(itemage) == len(items)
         
-        # # use bins to map the itemage
-        print('max_period:', max_period)
-        if self.dataset == 'ml-latest-small':
-            itemage_ = np.copy(itemage)
-            bins = [-1] + [0, 2, 4, 7, 10, 14, 20]
-            print("---------- Using Bins: ", bins[1:], "----------")
-            replaces = np.arange(len(bins) - 1)
-            for bidx in range(1, len(bins)):
-                b = list(range(bins[bidx-1]+1, bins[bidx]+1))
-                itemage_[itemage.isin(b)] = replaces[bidx - 1]
-            self.n_bins = min(self.n_periods, len(replaces))
-            # print(np.unique(itemage, return_counts=True))
-            # print(np.unique(itemage_, return_counts=True), '\n')
-            # exit(0)
-            return itemage_
+        # # # use bins to map the itemage
+        # print('max_period:', max_period)
+        # if self.dataset == 'ml-latest-small':
+        #     itemage_ = np.copy(itemage)
+        #     bins = [-1] + [0, 2, 4, 7, 10, 14, 20]
+        #     print("---------- Using Bins: ", bins[1:], "----------")
+        #     replaces = np.arange(len(bins) - 1)
+        #     for bidx in range(1, len(bins)):
+        #         b = list(range(bins[bidx-1]+1, bins[bidx]+1))
+        #         itemage_[itemage.isin(b)] = replaces[bidx - 1]
+        #     self.n_bins = min(self.n_periods, len(replaces))
+        #     # print(np.unique(itemage, return_counts=True))
+        #     # print(np.unique(itemage_, return_counts=True), '\n')
+        #     # exit(0)
+        #     return itemage_
         return itemage
 
     def merge_predOP(self, train):

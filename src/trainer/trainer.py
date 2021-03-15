@@ -924,7 +924,6 @@ class OPPT_Trainer(AbstractTrainer):
         interaction = self._data_pre(self.train)
         interaction, interaction_valid = self.train_valid_split(interaction, sampling=0.05)
         # print(self.model.state_dict().keys())
-        # exit(0)
         # interaction_valid = interaction
 
         start = time()
@@ -937,7 +936,6 @@ class OPPT_Trainer(AbstractTrainer):
                 print("epoch %d, time-consumin: %f s, train-loss: %f, valid-loss: %f, \nresults on validset: %s" % (epoch_idx+1, time()-start, train_loss, valid_loss, str(valid_results)))
                 self.best_valid_score, _, stop_flag, _ = self._early_stopping(valid_loss, self.best_valid_score, epoch_idx, 10, bigger=False)
                 # print(self.best_valid_score, stop_flag, valid_loss)
-                # exit(0)
                 if stop_flag:
                     print("Finished training, best eval result in epoch %d" % epoch_idx)
                     break
