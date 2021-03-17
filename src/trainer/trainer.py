@@ -195,7 +195,7 @@ class TARS_Trainer(AbstractTrainer):
             if (epoch_idx + 1) % 1 == 0: # evaluate on valid set
                 # self.load_model()
                 valid_results, valid_loss = self.evaluate()
-                print("epoch %d, time-consumin: %f s, train-loss: %f, valid-loss: %f, \nresults on validset: %s" % (epoch_idx+1, time()-start, train_loss, valid_loss, str(valid_results)))
+                print("epoch %d, time-consumin: %f s, train-loss: %f, valid-loss: %f, \nresults on validset: %s" % (epoch_idx+1, time()-start, train_loss, valid_loss, str(valid_results)), flush=True)
                 self.best_valid_score, _, stop_flag, _ = self._early_stopping(valid_loss, self.best_valid_score, epoch_idx, 10, bigger=False)
                 # print(self.best_valid_score, stop_flag, valid_loss)
                 # exit(0)
@@ -577,9 +577,9 @@ class OP_Trainer(AbstractTrainer):
         ob_uiT = np.zeros((self.n_users, self.n_items, self.n_periods), dtype=int) # O(U*I*T)
         # give all pos (u, i, itemage) label=1
         users, items, itemages = train['UserId'], train['ItemId'], train['ItemAge']
-        ob_uiT[users, items, itemages] = 1
         # # negatives
         # u_lifelength = []
+        # n_nnnegs = 0
         for u, group in train.groupby(by=['UserId']):
             lasttime = max(group['timestamp'])
             # # # dropout the items which are published after the lasttime per user
@@ -607,27 +607,36 @@ class OP_Trainer(AbstractTrainer):
             firsttime = min(group['timestamp'])
             lasttime = max(group['timestamp'])
             # u_lifelength.append(lasttime-firsttime)
-            smallestT_perI = self.data.get_itemage(np.arange(self.n_items), np.full(self.n_items, firsttime))
-            biggestT_perI = self.data.get_itemage(np.arange(self.n_items), np.full(self.n_items, lasttime), del_young_items=True)
+
+            smallestT_perI = self.data.get_itemage(np.arange(self.n_items), np.full(self.n_items, firsttime)) # inside, clip(0, .)
+            biggestT_perI = self.data.get_itemage(np.arange(self.n_items), np.full(self.n_items, lasttime), del_young_items=True) # if item enters system after lasttime, < 0
+            # if items enters the system after lasttime, not available
+            ob_uiT[u][self.data.item_birthdate >= lasttime] = -1 
             idx_i, idx_T = [], []
-            for i in range(self.n_items):
-                if smallestT_perI[i] > 0:
-                    idx_T.append(np.arange(smallestT_perI[i]))
-                    idx_i.append(np.full(smallestT_perI[i], i))
-                if biggestT_perI[i] < 0:
-                    idx_T.append(np.arange(self.n_periods))
-                    idx_i.append(np.full(self.n_periods, i))
-                else:
-                    if ((biggestT_perI[i] + 1) < self.n_periods):
-                        idx_T.append(np.arange(biggestT_perI[i]+1, self.n_periods))
-                        idx_i.append(np.full(self.n_periods-(biggestT_perI[i]+1), i))
+            for i in np.arange(self.n_items)[self.data.item_birthdate < lasttime]:
+                # Before user enters the system or after he leaves, item with age = [0, itemage in firsttime] & [itemage in lasttime, n_period]= -1
+                # n_nnnegs += biggestT_perI[i] - smallestT_perI[i] + 1
+                idx_T.append(np.arange(smallestT_perI[i]))
+                idx_i.append(np.full(smallestT_perI[i], i))
+                # idx_T.append(np.arange(smallestT_perI[i]))
+                # idx_i.append(np.full(smallestT_perI[i], i))
+                # if item enters the system before lasttime, [itemage in lasttime, n_periods] not available
+                idx_T.append(np.arange(biggestT_perI[i]+1, self.n_periods))
+                idx_i.append(np.full(self.n_periods-(biggestT_perI[i]+1), i))
+                # if biggestT_perI[i] < 0: # if item enters the system after lasttime, all 1-T is not available (-1)
+                #     idx_T.append(np.arange(self.n_periods))
+                #     idx_i.append(np.full(self.n_periods, i))
+                # else: # if item enters the system before lasttime, [itemage in lasttime, n_periods] not available
+                #     if ((biggestT_perI[i] + 1) < self.n_periods):
+                #         idx_T.append(np.arange(biggestT_perI[i]+1, self.n_periods))
+                #         idx_i.append(np.full(self.n_periods-(biggestT_perI[i]+1), i))
             if len(idx_i) > 0:
                 idx_i = np.concatenate(idx_i)
                 idx_T = np.concatenate(idx_T)
                 ob_uiT[u][idx_i, idx_T] = -1
-
-        # u_lifelength = (np.array(u_lifelength) / (30 * 24 * 60 * 60)).astype(int)
-        # print(np.unique(u_lifelength, return_counts=True))
+        ob_uiT[users, items, itemages] = 1 # positives set 1
+        # u_lifelength_ = (np.array(u_lifelength) / (365 * 24 * 60 * 60)).astype(int)
+        # print("user life-length (unit: year): ", np.unique(u_lifelength_, return_counts=True))
 
         # # ob_uiT: l=0 negatives; l=1 positives, l=-1 meaningless samples.
         users_neg, items_neg, itemages_neg = np.where(ob_uiT==0)
@@ -636,6 +645,16 @@ class OP_Trainer(AbstractTrainer):
         items_neg = torch.from_numpy(items_neg).to(self.device)
         itemages_neg = torch.from_numpy(itemages_neg).to(self.device)
         targets_neg = torch.zeros_like(users_neg, dtype=float).to(self.device)
+
+        # # output the distribution of itemage in training set
+        print("The distributions of p_T in train set:", '\n', '[', ', '.join([str((itemages.values == t).sum() * 1.0 / ((itemages.values == t).sum() + (itemages_neg == t).cpu().numpy().sum())) for t in range(self.n_periods)]), ']')
+        # p_T = []
+        # for t in range(self.n_periods):
+        #     n_pos, n_neg = (itemages.values == t).sum(), (itemages_neg == t).cpu().numpy().sum()
+        #     # print(t, n_pos, n_neg)
+        #     p_T.append(n_pos * 1.0 / (n_pos + n_neg))
+        # print("The distributions of p_T in training set:", '\n', '[', ', '.join([str(x) for x in p_T]), ']')
+        # exit(0)
 
         interaction_neg = {}
         interaction_neg['num'] = len(users_neg)
@@ -693,6 +712,7 @@ class OP_Trainer(AbstractTrainer):
         else:
             raise NotImplementedError('[ns_type] should be implemented.')
         print("#pos: %d, #neg: %d" % (interaction['num'], interaction_['num'] - interaction['num']))
+        # exit(0)
         return self._shuffle_date(interaction_)
 
 
@@ -736,7 +756,7 @@ class OP_Trainer(AbstractTrainer):
             interaction[key] = value[order]
         return interaction
     
-    def fit(self, valid_data=None, verbose=True, saved=True, resampling=True):
+    def fit(self, valid_data=None, verbose=True, saved=True, resampling=False):
         interaction_pos = self._data_pre(self.train)
         start = time()
         for epoch_idx in range(self.epochs):
@@ -744,13 +764,6 @@ class OP_Trainer(AbstractTrainer):
                 interaction = self._neg_sampling(interaction_pos, self.train)
                 # target = interaction['target'] 
                 # itemage = interaction['itemage']
-                # p_T_train = []
-                # for i in range(self.n_periods):
-                #     p_T_train.append(target[itemage == i].mean().cpu().numpy()) # / (self.n_users * self.n_items)
-                # print("p_T in train: %s" % (','.join([str(x) for x in p_T_train])))
-                # exit(0)
-                # print("#ratings=%d, p(o)=%f" % (len(target), target.mean().cpu()))
-                # exit(0)
             train_loss = self._train_epoch(interaction)
             if (epoch_idx + 1) % 1 == 0: # evaluate on valid set
                 # self.load_model()
@@ -939,8 +952,8 @@ class OPPT_Trainer(AbstractTrainer):
                 if stop_flag:
                     print("Finished training, best eval result in epoch %d" % epoch_idx)
                     break
-                self.save_model(epoch_idx)
                 start = time()
+            self.save_model(epoch_idx)
         return self.model
 
     def train_valid_split(self, interaction, sampling=0.1):

@@ -37,10 +37,10 @@ def _logging_(basis_conf, params_conf):
     print(now + " - model: %s, debiasing: %s" % (basis_conf['mode'], debiasing))
     # print(now + " - use gpu: %s" % (basis_conf['use_gpu']))
     if ("evaluation" in basis_conf) and (basis_conf['evaluation'].lower() == 'true'):
-        print(now + " - directly load well-trained model and evaluate")
+        print(now + " - directly load well-trained model and evaluate", flush=True)
     
     if basis_conf['mode'][0] != 'b': # baselines do not have params
-        print("conf : " + str(params_conf))
+        print("conf : " + str(params_conf), flush=True)
     
 
 def run_dqn():

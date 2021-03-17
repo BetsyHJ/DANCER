@@ -135,4 +135,6 @@ class MF_v(MF):
         # f_uit = r_ui + self.b
         # # v_u * v_i + b_u + b_i + b
         f_uit = r_ui + self.b + self.b_u(user).squeeze() + self.b_i(item).squeeze()
+        if self.m is not None:
+            return self.m(f_uit)
         return f_uit

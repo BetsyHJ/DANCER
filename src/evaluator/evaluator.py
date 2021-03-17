@@ -371,6 +371,8 @@ class OP_Evaluator(AbstractEvaluator):
         itemages = np.concatenate((itemage, itemage_neg), axis=0)
         itemages = torch.from_numpy(itemages).to(self.device)
 
+        print("The distributions of p_T in test set:", '\n', '[', ', '.join([str(target[itemages == t].cpu().numpy().mean()) for t in range(self.n_periods)]), ']')
+        
         interaction = {}
         interaction['user'] = uid_list
         interaction['item'] = iid_list
@@ -474,8 +476,6 @@ class OP_Evaluator(AbstractEvaluator):
         
         # evaluate on testset with the interactions happening among next one-month per user
         interaction = self._neg_sampling_next_month(full_negs=True)
-        # self._save_something(interaction)
-        # exit(0)
         w_sigmoid = False
 
         # # results
@@ -485,8 +485,9 @@ class OP_Evaluator(AbstractEvaluator):
             scores, w_sigmoid, interaction = self.baselines(interaction, variety=int(baselines[1]), subset=subset) # w_sigmoid means if we should do sigmoid later in cal_op_metrics.
         else:
             scores = self._eval_epoch(interaction)
-            scores /= 4
+            scores /= 4.0
             print("The chance to generate 1 is %.6f" % ((scores>0.5).sum()*1.0 / len(scores)))
+            # self._save_something(interaction)
         
         # print("the max score of the probability is ", torch.max(scores))
         # # evaluate it as a prediction task, but too many 0s
@@ -510,7 +511,7 @@ class OP_Evaluator(AbstractEvaluator):
         # # save the distribution of predicted scores sigmoid(W * T + b)
         itemages = torch.arange(self.n_periods).to(self.device)
         scores = self.model.forward(None, None, itemages)
-        print(','.join([str(x) for x in scores.cpu().numpy()]))
+        print("Scores at T [0 : 20): ", ', '.join([str(x) for x in scores.cpu().numpy()]))
 
         # # save the distribution of the p_T in testset
         # targets = interaction['target'].cpu().numpy()
@@ -526,7 +527,7 @@ class OP_Evaluator(AbstractEvaluator):
         data = pd.concat([self.data.train_full, self.data.test], ignore_index=True)
         interaction = self._data_pre(data)
         scores = self._eval_epoch(interaction).cpu().numpy()
-        scores /= 3.5
+        scores /= 4.0
         assert len(scores) == len(data)
         data['predOP'] = scores
 
@@ -566,7 +567,7 @@ class OP_Evaluator(AbstractEvaluator):
         if variety == 1:
             print("****** Note we want to know what happened if we give all the predicted scores %.6f" % (scores[0].cpu()))
         elif variety == 2:
-            scores += 0.005
+            scores += 0.006
             # scores += targets.cpu().numpy().mean()
             # scores += len(train) * 1.0 / (self.n_users * self.n_items  * self.n_periods)
             print("****** Note we want to know what happened if we give all the predicted scores %.6f" % (scores[0].cpu()))
@@ -574,13 +575,13 @@ class OP_Evaluator(AbstractEvaluator):
             scores_T = []
             itemages = interaction['itemage']
             num_D = self.n_users * self.n_items
-            norm = 2.5 #0.1 / 0.013641
+            norm = 7 #2.5 #0.1 / 0.013641
             print("We do normalization: %f" % norm)
             for T in range(self.n_periods):
                 # # calculate in training set
                 s_T = (train['ItemAge'] == T).sum() * 1. / num_D * norm
                 # # calculate in test set
-                # s_T = targets[itemages == T].mean()
+                # s_T = targets[itemages == T].mean() 
                 scores[itemages == T] = s_T
                 scores_T.append(s_T)
             print("****** Note we want to know what happened if we give all the predicted scores %s" % str(scores_T))
