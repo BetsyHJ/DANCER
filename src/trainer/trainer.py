@@ -453,6 +453,7 @@ class OP_Trainer(AbstractTrainer):
     def __init__(self, config, model, data):
         super(OP_Trainer, self).__init__(config, model, data)
 
+        self.splitting = config['splitting']
         self.optimizer = config['optimizer']
         self.saved_model_file = "./checkpoint_dir/" + config['dataset'] + '_' + config['mode'] + '_ObsPred'
         print("model will be saved into:", self.saved_model_file)
@@ -463,6 +464,9 @@ class OP_Trainer(AbstractTrainer):
         self.n_periods = self.data.n_periods
 
         self.optimizer = self._build_optimizer()
+        if self.splitting == 'random':
+            return
+
         self.item_birthdate = torch.from_numpy(self.data._get_item_birthdate()).to(self.device)
         # if config['mode'].lower() in ['tmf','tf']:
         #     self.ns_type = 'random'
@@ -755,23 +759,34 @@ class OP_Trainer(AbstractTrainer):
             value = interaction[key]
             interaction[key] = value[order]
         return interaction
+    def _numpy2tensor(self, interaction):
+        for k in interaction.keys():
+            if k != 'num':
+                interaction[k] = torch.from_numpy(interaction[k]).to(self.device)
+        return interaction
     
     def fit(self, valid_data=None, verbose=True, saved=True, resampling=False):
-        interaction_pos = self._data_pre(self.train)
+        if self.splitting == 'random':
+            interaction = self._numpy2tensor(self.data.train_interactions)
+            interaction_valid = self._numpy2tensor(self.data.valid_interactions)
+        else: # else, time-based splitting
+            interaction_pos = self._data_pre(self.train)
         start = time()
         for epoch_idx in range(self.epochs):
-            if (epoch_idx == 0) or (resampling):
+            if (self.splitting != 'random') and ((epoch_idx == 0) or (resampling)):
                 interaction = self._neg_sampling(interaction_pos, self.train)
                 # target = interaction['target'] 
                 # itemage = interaction['itemage']
             train_loss = self._train_epoch(interaction)
             if (epoch_idx + 1) % 1 == 0: # evaluate on valid set
                 # self.load_model()
-                valid_results, valid_loss = self.evaluate(interaction)
+                if self.splitting == 'random':
+                    valid_results, valid_loss = self.evaluate(interaction_valid, samplings=1.0)
+                else:
+                    valid_results, valid_loss = self.evaluate(interaction)
                 print("epoch %d, time-consumin: %f s, train-loss: %f, valid-loss: %f, \nresults on validset: %s" % (epoch_idx+1, time()-start, train_loss, valid_loss, str(valid_results)))
                 self.best_valid_score, _, stop_flag, _ = self._early_stopping(valid_loss, self.best_valid_score, epoch_idx, 10, bigger=False)
                 # print(self.best_valid_score, stop_flag, valid_loss)
-                # exit(0)
                 if stop_flag:
                     print("Finished training, best eval result in epoch %d" % epoch_idx)
                     break
@@ -811,6 +826,20 @@ class OP_Trainer(AbstractTrainer):
         # scores.clip(min(target), max(target)) # clip the output scores
         return total_loss, scores
     
+    # def interaction_split(self, interaction, ratio=0.125):
+    #     # valid set holds the 12.5% of the full trainset. Then the train:valid:test = 0.7 : 0.1: 0.2 = 7:1:2
+    #     num2 = int(interaction['num'] * ratio) # valid
+    #     num1 = int(interaction['num']) - num2 # train
+    #     reorder = torch.randperm(interaction['num']).to(self.device)
+    #     interaction1, interaction2 = {}, {}
+    #     interaction1['num'], interaction2['num'] = num1, num2
+    #     for k in interaction.key():
+    #         if k != 'num':
+    #             v = interaction[k][reorder]
+    #             interaction1[k] = v[:num1]
+    #             interaction2[k] = v[-num2:]
+    #     return interaction1, interaction2
+
     @torch.no_grad()
     def evaluate(self, interaction=None, samplings=0.1):
         # # use training set (pos+negs), sample a small

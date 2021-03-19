@@ -122,11 +122,11 @@ class TMF_variety(TMF):
     def __init__(self, config, data, debiasing=False, output_dim=2):
         super(TMF_variety, self).__init__(config, data, debiasing=False, output_dim=2)
         self.item_Dyn_embedding = None
-        # print("********* Using TMF-variety: (v_u * v_i) + b + b_i + b_u + b_T **********")
-        print("********* Using TMF-variety: (v_u * v_i) * s_T **********")
-        # self.b_u = nn.Embedding(self.n_users, 1)
-        # self.b_i = nn.Embedding(self.n_items, 1)
-        # self.b = Parameter(torch.Tensor(1))
+        print("********* Using TMF-variety: (v_u * v_i) + b + b_i + b_u + b_T **********")
+        # print("********* Using TMF-variety: (v_u * v_i) + b_T **********")
+        self.b_u = nn.Embedding(self.n_users, 1)
+        self.b_i = nn.Embedding(self.n_items, 1)
+        self.b = Parameter(torch.Tensor(1))
         self.global_T = nn.Embedding(self.n_periods, 1)
         self.apply(self._init_weights)
         
@@ -138,8 +138,8 @@ class TMF_variety(TMF):
         # [B 1]
         # # p1 + b
         # f_uit = torch.mul(torch.mul(r_ui, itemage), self.w) # + self.b
-        # f_uit = r_ui + self.b + self.b_u(user).squeeze() + self.b_i(item).squeeze() + self.global_T(itemage).squeeze()
-        f_uit = r_ui * self.global_T(itemage).squeeze()
+        f_uit = r_ui + self.b + self.b_u(user).squeeze() + self.b_i(item).squeeze() + self.global_T(itemage).squeeze()
+        # f_uit = r_ui + self.global_T(itemage).squeeze()
         if self.m is None:
             return f_uit
         return self.m(f_uit) # [B, D] -> [B]
@@ -152,7 +152,7 @@ class TMF_fast(TMF):
     '''
     def __init__(self, config, data, debiasing=False, output_dim=2):
         super(TMF_fast, self).__init__(config, data, debiasing=False, output_dim=2)
-        print("********* Using TMF-fast **********")
+        print("********* Using TMF-fast: W * (v_u * v_i) * T + b **********")
         
         # define layers and loss
         self.item_Dyn_embedding = None

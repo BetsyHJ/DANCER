@@ -270,6 +270,8 @@ class RatPred_Evaluator(AbstractEvaluator):
 class OP_Evaluator(AbstractEvaluator):
     def __init__(self, config, model, data):
         super(OP_Evaluator, self).__init__(config, model, data)
+        self.splitting = config['splitting']
+
         self.n_items = self.data.n_items
         self.n_users = self.data.n_users
         self.n_periods = self.data.n_periods
@@ -443,6 +445,11 @@ class OP_Evaluator(AbstractEvaluator):
         itemage =torch.randint(self.n_periods, size=(num, )).to(self.device)
         target = torch.where(itemage >= 0.5 * self.n_periods, 0, 1).to(self.device)
         return {'user':users, 'item':items, 'target':target, 'itemage':itemage, 'num':num}
+    def _numpy2tensor(self, interaction):
+        for k in interaction.keys():
+            if k != 'num':
+                interaction[k] = torch.from_numpy(interaction[k]).to(self.device)
+        return interaction
 
     @torch.no_grad()
     def _eval_epoch(self, interaction, batch_size=512):
@@ -475,7 +482,10 @@ class OP_Evaluator(AbstractEvaluator):
         # interaction = self._data_random()
         
         # evaluate on testset with the interactions happening among next one-month per user
-        interaction = self._neg_sampling_next_month(full_negs=True)
+        if self.splitting == 'random':
+            interaction = self._numpy2tensor(self.data.test_interactions)
+        else:
+            interaction = self._neg_sampling_next_month(full_negs=True)
         w_sigmoid = False
 
         # # results
@@ -485,7 +495,8 @@ class OP_Evaluator(AbstractEvaluator):
             scores, w_sigmoid, interaction = self.baselines(interaction, variety=int(baselines[1]), subset=subset) # w_sigmoid means if we should do sigmoid later in cal_op_metrics.
         else:
             scores = self._eval_epoch(interaction)
-            scores /= 4.0
+            if self.splitting != 'random': # only for time-based splitting, because 4:1 splitting per user, eval in next year and most users exist for one year.
+                scores /= 4.0
             print("The chance to generate 1 is %.6f" % ((scores>0.5).sum()*1.0 / len(scores)))
             # self._save_something(interaction)
         
@@ -620,6 +631,8 @@ def cal_ob_pred2ranking_metrics(interaction, scores, K=10):
         MRR.append(mrrs_(preds))
         MAP.append(maps_(preds))
         NDCG.append(ndcgs_(preds))
+        print(preds)
+        exit(0)
     results = {}
     results['Prec@%d'%K] = (np.array(Prec)).mean()
     results['Recall@%d'%K] = (np.array(Recall)).mean()

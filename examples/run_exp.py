@@ -119,7 +119,14 @@ def run_dqn():
         MODEL = GRU4Rec
     else:
         NotImplementedError("Make sure 'mode' in ['GRU4Rec', 'TMF', 'TMF_fast', 'MF', 'TF']!")
-    ## train process
+
+    # # add random-splitting for task 1: OIPT
+    if task == 'OIPT':
+        config['splitting'] = 'time'
+        if 'splitting' in conf:
+            config['splitting'] = conf['splitting']
+
+    # # train process
     config['mode'] = conf['mode']
     model = MODEL(config, data, debiasing=config['debiasing'])
     if ('task' in config) and (config['task']=='OPPT'):

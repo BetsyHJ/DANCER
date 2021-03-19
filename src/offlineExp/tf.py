@@ -49,6 +49,7 @@ class TF(nn.Module):
 
         # parameters initialization
         self.apply(self._init_weights)
+        print("********* Using TF-variety: v_u * (v_i + v_t) **********")
 
     def _init_weights(self, module):
         if isinstance(module, nn.Embedding):
@@ -73,13 +74,13 @@ class TF(nn.Module):
         item_e = self.item_embedding(item)
         time_e = self.time_embedding(itemage)
         # # u_v * i_v * T_v
-        ui_e = torch.mul(user_e, item_e) # [B D]
-        uit_e = torch.mul(ui_e, time_e).sum(-1).float() # [B, D] -> [B]
+        # ui_e = torch.mul(user_e, item_e) # [B D]
+        # uit_e = torch.mul(ui_e, time_e).sum(-1).float() # [B, D] -> [B]
+        # # u_v * (i_v + T_v)
+        uit_e = torch.mul(user_e, time_e + item_e).sum(-1).float()
         if self.m is None:
             return uit_e
         return self.m(uit_e)
-        # # u_v * (i_v + T_v)
-        # return torch.mul(user_e, time_e + item_e).sum(-1).float()
         
 
     def calculate_loss(self, interaction):
