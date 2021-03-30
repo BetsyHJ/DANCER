@@ -386,9 +386,12 @@ class OP_Evaluator(AbstractEvaluator):
     def _data_pre(self, test):
         uid_list = torch.from_numpy(np.array(test['UserId'].values, dtype=int)).to(self.device)
         iid_list = torch.from_numpy(np.array(test['ItemId'].values, dtype=int)).to(self.device)
-        target = torch.ones_like(iid_list).to(self.device)
-        itemage = torch.from_numpy(np.array(test['ItemAge'].values, dtype=int)).to(self.device)
         timestamp = torch.from_numpy(np.array(test['timestamp'].values, dtype=int)).to(self.device)
+        target = torch.ones_like(iid_list).to(self.device)
+        if 'ItemAge' in test.columns:
+            itemage = torch.from_numpy(np.array(test['ItemAge'].values, dtype=int)).to(self.device)
+        else:
+            itemage = self.data.get_itemage(iid_list, timestamp, self.item_birthdate)
 
         interaction = {}
         interaction['user'] = uid_list
@@ -470,7 +473,7 @@ class OP_Evaluator(AbstractEvaluator):
         
     @torch.no_grad() 
     def evaluate(self, ub='false', threshold=1e-3, baselines = None, subset = None):
-        # self._save_pred_OP()
+        self._save_pred_OP()
 
         torch.manual_seed(517)
         np.random.seed(517)
@@ -538,14 +541,17 @@ class OP_Evaluator(AbstractEvaluator):
         data = pd.concat([self.data.train_full, self.data.test], ignore_index=True)
         interaction = self._data_pre(data)
         scores = self._eval_epoch(interaction).cpu().numpy()
-        scores /= 4.0
+        if self.splitting != 'random':
+            scores /= 4.0
         assert len(scores) == len(data)
         data['predOP'] = scores
-
-        print("--------- Save the predicted Observation Probabilities of all observed (u,i,t) ----------")
+        if 'ItemAge' not in data:
+            data['itemage'] = interaction['itemage'].cpu().numpy()
+        print("--------- Save the predicted Observation Probabilities of all observed (u,i,t), Nr. %d ----------" % interaction['num'])
         path = self.config['path'] + self.config['dataset'] + '/predOP_' + self.config['mode'] + '.csv'
+        data = data[['UserId', 'ItemId', 'rating', 'timestamp', 'itemage', 'predOP']]
         data.to_csv(path, sep=',', header=True, index=False)
-        
+
     
     def baselines(self, interaction, variety=1, subset = None): # we should use the training set rather than test set.
         '''some simple baseline variety
@@ -556,8 +562,12 @@ class OP_Evaluator(AbstractEvaluator):
         --- Params ---
         subset: the evaluation subset, if None we use all pos+negs, if pos we only use pos, else only negs
         '''
-        # train only contains positives
-        train = self.data.train_full
+        # # train only contains positives
+        # if self.splitting == 'random':
+        #     train = self.data.train_interactions
+        # else:
+        #     train = self.data.train_full
+        train = self.data.train_interactions
         # train = self.data.train
         w_sigmoid = False # do not do sigmoid later in cal_op_metrics
         targets = interaction['target']
@@ -578,21 +588,26 @@ class OP_Evaluator(AbstractEvaluator):
         if variety == 1:
             print("****** Note we want to know what happened if we give all the predicted scores %.6f" % (scores[0].cpu()))
         elif variety == 2:
-            scores += 0.006
-            # scores += targets.cpu().numpy().mean()
+            # scores += 0.006
+            scores += targets.cpu().numpy().mean()
             # scores += len(train) * 1.0 / (self.n_users * self.n_items  * self.n_periods)
             print("****** Note we want to know what happened if we give all the predicted scores %.6f" % (scores[0].cpu()))
         elif variety == 3:
             scores_T = []
             itemages = interaction['itemage']
             num_D = self.n_users * self.n_items
-            norm = 7 #2.5 #0.1 / 0.013641
+            norm = 0.265#2.5 #0.1 / 0.013641
             print("We do normalization: %f" % norm)
             for T in range(self.n_periods):
-                # # calculate in training set
-                s_T = (train['ItemAge'] == T).sum() * 1. / num_D * norm
-                # # calculate in test set
-                # s_T = targets[itemages == T].mean() 
+                s_T = train['target'][train['itemage'] == T].mean() * norm
+                # if self.splitting == 'random':
+                #     # s_T = train['target'][train['itemage'] == T].mean()
+                #     s_T = targets[itemages == T].cpu().numpy().mean()
+                # else:
+                #     # # calculate in training set
+                #     s_T = (train['ItemAge'] == T).sum() * 1. / num_D * norm
+                    # # calculate in test set
+                    # s_T = targets[itemages == T].mean() 
                 scores[itemages == T] = s_T
                 scores_T.append(s_T)
             print("****** Note we want to know what happened if we give all the predicted scores %s" % str(scores_T))
@@ -631,8 +646,9 @@ def cal_ob_pred2ranking_metrics(interaction, scores, K=10):
         MRR.append(mrrs_(preds))
         MAP.append(maps_(preds))
         NDCG.append(ndcgs_(preds))
-        print(preds)
-        exit(0)
+        # print(preds)
+        # print(group_shuffled['score'][:K])
+        # exit(0)
     results = {}
     results['Prec@%d'%K] = (np.array(Prec)).mean()
     results['Recall@%d'%K] = (np.array(Recall)).mean()

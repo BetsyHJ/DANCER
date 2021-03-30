@@ -2,16 +2,19 @@ import sys
 sys.path.append('../src/')
 import os
 os.environ['KMP_DUPLICATE_LIB_OK']='True'
+import random
 
 import numpy as np
 from time import time, localtime, strftime
 import configparser
 
+import torch
+
 from util.data import Dataset
 from offlineExp.gru4rec import GRU4Rec
 from offlineExp.tmf import TMF, TMF_variety, TMF_fast, TMF_fast_variety
 from offlineExp.mf import MF, MF_v
-from offlineExp.tf import TF
+from offlineExp.tf import TF, TMTF
 # from trainer.trainer import TARS_Trainer as Trainer
 from trainer.trainer import OP_Trainer 
 from trainer.trainer import OPPT_Trainer
@@ -45,26 +48,25 @@ def _logging_(basis_conf, params_conf):
 
 def run_dqn():
     conf = _get_conf('ml-100k')
+    # for multiple jobs in 
+    args = set_hparams()
+    if args.mode is not None:
+        conf['mode'] = args.mode.lower()
 
     # init DQN
     config = load_parameters(conf['mode'])
-    
-    # tuning = 'learning_rate'.upper()
-    # tuning = 'memory_size'.upper()
-    # tuning = 'batch_size'.upper()
-    # tuning = 'gamma'.upper()
-    # tuning = 'optimizer'.upper()
-    # tuning = 'replace_targetnet'.upper()
-    # tuning = 'epsilon_decay_step'
-    # tuning = 'lr_decay_step'
-    # tuning = "state_encoder"
-    # tuning = 'action_dim'.upper()
-    # tuning = 'RNN_STATE_DIM'
-    # print("tuning:",tuning)
-    # config['SAVE_MODEL_FILE'] = conf["data.input.dataset"] + '_' + \
-    #     conf["data.gen_model"] + '_' + conf["data.debiasing"] + '_' + \
-    #     conf['mode'] + '_' + config["state_encoder"] + '_' + 'r01_SmoothL1_' + 'notrick_' + tuning + str(config[tuning]) + '_' 
-    # config['SAVE_MODEL_FILE'] = 'sim_random_' + str(num_users) + '_' + str(action_space) + '_' + config["state_encoder"] + '_'
+    if args.lr is not None:
+        config["learning_rate"] = args.lr
+    if args.reg is not None:
+        config['l2_reg'] = args.reg
+    if args.seed is not None:
+        config['seed'] = args.seed
+
+    # # set random seed
+    if 'seed' in config:
+        random.seed(config['seed'])
+        np.random.seed(config['seed'])
+        torch.manual_seed(config['seed'])
 
     task = 'OIPT'
     # task = 'OPPT'
@@ -76,10 +78,16 @@ def run_dqn():
     data = Dataset(conf, task=task)
     # ctr = data.train['ctr']
     
+    # # add random-splitting for task 1: OIPT
+    if task == 'OIPT':
+        config['splitting'] = 'time'
+        if 'splitting' in conf:
+            config['splitting'] = conf['splitting']
+
     # Super simple baselines just need some statistic info without training process.
     if 'b' in conf['mode']:
         if config['task'] == 'OIPT':
-            evaluator = OP_Evaluator(None, None, data)
+            evaluator = OP_Evaluator(config, None, data)
             # evaluator.evaluate(baselines=conf['mode'], subset='neg')
             for subset in [None, 'pos', 'neg']:
                 evaluator.evaluate(baselines=conf['mode'], subset=subset)
@@ -109,6 +117,8 @@ def run_dqn():
         MODEL = TMF_fast
     elif conf['mode'].lower() == "tmf_fast_v":
         MODEL = TMF_fast_variety
+    elif conf['mode'].lower() == "tmtf":
+        MODEL = TMTF
     elif conf['mode'].lower() == "tf":
         MODEL = TF
     elif conf['mode'].lower() == "mf":
@@ -118,13 +128,7 @@ def run_dqn():
     elif conf['mode'].lower() == "gru4rec":
         MODEL = GRU4Rec
     else:
-        NotImplementedError("Make sure 'mode' in ['GRU4Rec', 'TMF', 'TMF_fast', 'MF', 'TF']!")
-
-    # # add random-splitting for task 1: OIPT
-    if task == 'OIPT':
-        config['splitting'] = 'time'
-        if 'splitting' in conf:
-            config['splitting'] = conf['splitting']
+        raise NotImplementedError("Make sure 'mode' in ['GRU4Rec', 'TMF', 'TMF_fast', 'MF', 'TF', 'TMTF']!")
 
     # # train process
     config['mode'] = conf['mode']
@@ -169,12 +173,6 @@ def load_parameters(mode):
         return {}
     config.read("../conf/"+mode+".properties")
     conf=dict(config.items("hyperparameters"))
-    # for multiple jobs in 
-    args = set_hparams()
-    if args.lr is not None:
-        conf["learning_rate"] = args.lr
-    if args.reg is not None:
-        conf['l2_reg'] = args.reg
     return conf
 
 def set_hparams():
@@ -183,9 +181,10 @@ def set_hparams():
     # parser.add_argument('--seed', type=int)
     parser.add_argument('--lr', type=float, default=None)
     parser.add_argument('--reg', type=float, default=None)
+    parser.add_argument('--seed', type=int, default=None)
+    parser.add_argument('--mode', type=str, default=None)
     args = parser.parse_args()
-    print("now lr is", args.lr, ", and reg is", args.reg, flush=True)
-    # np.random.seed(args.seed)
+    print("now lr is", args.lr, ", reg is", args.reg, ", seed is", args.seed, ", and mode is", args.mode, flush=True)
     return args
 
 if __name__ == "__main__":

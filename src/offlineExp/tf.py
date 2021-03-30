@@ -50,6 +50,7 @@ class TF(nn.Module):
         # parameters initialization
         self.apply(self._init_weights)
         print("********* Using TF-variety: v_u * (v_i + v_t) **********")
+        # print("********* Using TF-variety: v_u * v_i * v_t **********")
 
     def _init_weights(self, module):
         if isinstance(module, nn.Embedding):
@@ -109,3 +110,20 @@ class TF(nn.Module):
         test_items_emb = test_items_emb.view(self.n_items * self.n_periods, self.embedding_size) #[N*T D]
         scores = torch.matmul(self.user_embedding(user), test_items_emb.transpose(0, 1))  # [B D], [D N*T] -> [B N*T]
         return scores.view(-1, self.n_items, self.n_periods) # [B N T]
+
+class TMTF(TF):
+    def __init__(self, config, data, debiasing=False):
+        super(TMTF, self).__init__(config, data, debiasing)
+        self.b_T = nn.Embedding(self.n_periods, 1)
+        self.apply(self._init_weights)
+        print("********* Using TMTF: v_u * (v_i + v_t) + b_T **********")
+
+    def forward(self, user, item, itemage):
+        user_e = self.user_embedding(user)
+        item_e = self.item_embedding(item)
+        time_e = self.time_embedding(itemage)
+        # # u_v * (i_v + T_v)
+        uit_e = torch.mul(user_e, time_e + item_e).sum(-1).float() + self.b_T(itemage).squeeze()
+        if self.m is None:
+            return uit_e
+        return self.m(uit_e)

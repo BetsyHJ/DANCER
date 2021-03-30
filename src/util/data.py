@@ -65,19 +65,10 @@ class Dataset(object):
         if self.n_bins is not None:
             self.n_periods = self.n_bins
         
-        # # get train and valid set
-        # df_train, df_valid = [], []
-        # for u, group in self.train_full.groupby(['UserId']):
-        #     sorted_ratings = group.sort_values('timestamp', ascending=True)
-        #     # # leave-one-out
-        #     # df_train.append(sorted_ratings[:-1])
-        #     # df_valid.append(sorted_ratings[-1:])
-        #     # # user center, time-dependent, proportion
-        #     n_valid = int(0.25 * len(sorted_ratings))
-        #     df_train.append(sorted_ratings[:-n_valid])
-        #     df_valid.append(sorted_ratings[-n_valid:])
-        # self.train = pd.concat(df_train, axis=0)
-        # self.valid = pd.concat(df_valid, axis=0)
+        # # get training and valid observation data for model learning
+        # OIPT, do time-based splitting, generate train_interactions and valid_interactions with 9:1 splitting
+        if (task == 'OIPT') and (config['splitting'] != 'random'):
+            self.interation_data_time_OIPT(self.train_full)
 
         # basic info
         print("(#users : %d, #items : %d, period_type : %s, n_periods : %d)" % (self.n_users, self.n_items, self.period_type, self.n_periods))
@@ -114,7 +105,7 @@ class Dataset(object):
         # self.period_second = period_second
         if item_birthdate is not None:
             item_pt = item_birthdate[items]
-            itemage = ((timestamp - item_pt) * 1.0 / period_second).int().clip(0, max_period)
+            itemage = ((timestamp - item_pt) * 1.0 / period_second).long().clip(0, max_period)
             # if del_young_items:
             #     itemage[(timestamp - item_pt) < 0] = -1
         else:
@@ -200,6 +191,80 @@ class Dataset(object):
         self.train_full.to_csv(self.path + self.dataset + '/train_random.csv', index=False)
         self.test.to_csv(self.path + self.dataset + '/test_random.csv', index=False)
         print("Saving randomly-splitted dataset. Done.")
+    
+    def interation_data_time_OIPT(self, ratings):
+        if self.task.upper() != 'OIPT':
+            raise NotImplementedError("Make sure task as OIPT when calling resplitting_time_OIPT")
+        # load as interactions
+        if os.path.exists(self.path + self.dataset + '/valid_time_OIPT.csv'):
+            train = self._load_ratings(self.path + self.dataset + '/train_time_OIPT.csv')
+            self.train_interactions = self._df2interactions(train)
+            valid = self._load_ratings(self.path + self.dataset + '/valid_time_OIPT.csv')
+            self.valid_interactions = self._df2interactions(valid)
+            print("Columns of data are, ", train.columns)
+            print("Loading time-based-splitted training and valid set. Done.")
+
+            # print("The distributions of p_T in training set:", '\n', '[', ', '.join([str(train['target'][train['itemage'] == t].mean()) for t in range(self.n_periods)]), ']\n')
+            # print("The distributions of p_T in valid set:", '\n', '[', ', '.join([str(valid['target'][valid['itemage'] == t].mean()) for t in range(self.n_periods)]), ']\n')
+            # exit(0)
+            return
+        # 
+        ob_uiT = np.zeros((self.n_users, self.n_items, self.n_periods), dtype=int)
+        # # del item without birthdate, means not be interacted
+        # ob_uiT[:, self.item_birthdate == 0] = -1
+        for u, group in ratings.groupby(by=['UserId']):
+            firsttime = min(group['timestamp'])
+            lasttime = max(group['timestamp'])
+            smallestT_perI = self.get_itemage(np.arange(self.n_items), np.full(self.n_items, firsttime)) # inside, clip(0, .)
+            biggestT_perI = self.get_itemage(np.arange(self.n_items), np.full(self.n_items, lasttime), del_young_items=True) # if item enters system after lasttime, < 0
+            # # del items enters the system after lasttime, not available
+            ob_uiT[u][self.item_birthdate >= lasttime] = -1
+            idx_i, idx_T = [], []
+            for i in np.arange(self.n_items)[self.item_birthdate < lasttime]:
+                # before user enters system, not available
+                idx_T.append(np.arange(smallestT_perI[i]))
+                idx_i.append(np.full(smallestT_perI[i], i))
+                # after user leaves system, not available
+                idx_T.append(np.arange(biggestT_perI[i]+1, self.n_periods))
+                idx_i.append(np.full(self.n_periods-(biggestT_perI[i]+1), i))
+            if len(idx_i) > 0:
+                idx_i = np.concatenate(idx_i)
+                idx_T = np.concatenate(idx_T)
+                ob_uiT[u][idx_i, idx_T] = -1
+        # set pos = 1, (u, i, itemage)
+        users, items, itemages = ratings['UserId'], ratings['ItemId'], ratings['ItemAge']
+        targets = np.ones_like(users, dtype=int)
+        ob_uiT[users, items, itemages] = 1
+        # negs
+        users_neg, items_neg, itemages_neg = np.where(ob_uiT==0)
+        assert users_neg.shape == items_neg.shape
+        targets_neg = np.zeros_like(users_neg, dtype=int)
+        # merge pos and neg
+        users = np.concatenate((users, users_neg), axis=0)
+        items = np.concatenate((items, items_neg), axis=0)
+        itemages = np.concatenate((itemages, itemages_neg), axis=0)
+        targets = np.concatenate((targets, targets_neg), axis=0)
+        nums = users.shape[0]
+        # numpy to pandas, cols = ['user', 'item', 'itemage', 'target']
+        df = pd.DataFrame({'user': users, 'item': items, 'itemage': itemages, 'target': targets})
+        self.n_periods = min(self.n_periods, max(itemages) + 1)
+
+        # # shuffle, split and save into file
+        # before we use 517 as random seed
+        np.random.seed(2021)
+        uniform_p = np.random.uniform(size=nums)
+        # # take 10% as valid set
+        df_train = df[uniform_p <= 0.8]
+        df_valid = df[uniform_p > 0.8]
+        assert (len(df_train) + len(df_valid)) == len(df)
+        print("Nr. in data, train and valid are %d, %d and %d" % (len(df['target']), len(df_train['target']), len(df_valid['target'])))
+        print("#o in data, train and valid are %d, %d and %d" % (df['target'].sum(), df_train['target'].sum(), df_valid['target'].sum()))
+        print("p(o) in data, train and valid are %.4f, %.4f and %.4f" % (df['target'].mean(), df_train['target'].mean(), df_valid['target'].mean()))
+        df_train.to_csv(self.path + self.dataset + '/train_time_OIPT.csv', index=False)
+        df_valid.to_csv(self.path + self.dataset + '/valid_time_OIPT.csv', index=False)
+        print("Saving time-based-splitted dataset. Done.")
+        self.train_interactions, self.test_interactions = self._df2interactions(df_train), self._df2interactions(df_valid)
+        
 
     def resplitting_random_OIPT(self):
         if self.task.upper() != 'OIPT':
@@ -210,13 +275,14 @@ class Dataset(object):
             train = self._load_ratings(self.path + self.dataset + '/train_random_OIPT.csv')
             self.train_interactions = self._df2interactions(train)
             valid = self._load_ratings(self.path + self.dataset + '/valid_random_OIPT.csv')
-            self.valid_interactions = self._df2interactions(train)
+            self.valid_interactions = self._df2interactions(valid)
             test = self._load_ratings(self.path + self.dataset + '/test_random_OIPT.csv')
             self.test_interactions = self._df2interactions(test)
             # cols = ['user', 'item', 'itemage', 'target'] which are generated by negative sampling. Not timestamp, because for negs, we do not have their timestamps
             self.n_users = max(max(train['user']), max(valid['user']), max(test['user'])) + 1
             self.n_items = max(max(train['item']), max(valid['item']), max(test['item'])) + 1
             self.n_periods = max(max(train['itemage']), max(valid['itemage']), max(test['itemage'])) + 1
+            self.max_period = self.n_periods - 1
             print("Columns of data are, ", train.columns)
             print("Loading randomly-splitted training and test set. Done.")
             return
@@ -227,7 +293,7 @@ class Dataset(object):
         self.n_users, self.n_items = max(ratings['UserId']) + 1, max(ratings['ItemId']) + 1
         self.max_period = self.n_periods - 1
         self.item_birthdate = self._get_item_birthdate()
-        self.train_full_interactions, self.test_interactions = self._neg_sampling_time_based(ratings)
+        self.train_interactions, self.valid_interactions, self.test_interactions = self._neg_sampling_time_based(ratings)
         print("Generate the random-splitted training/test set after negative generation. Done.")
         
         

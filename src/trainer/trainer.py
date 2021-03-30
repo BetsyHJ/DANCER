@@ -29,7 +29,6 @@ class AbstractTrainer(object):
         if 'l2_reg' in config:
             self.l2_reg = float(config['l2_reg'])
 
-        # 
         self.best_valid_score = None
     
     def _build_optimizer(self):
@@ -202,8 +201,8 @@ class TARS_Trainer(AbstractTrainer):
                 if stop_flag:
                     print("Finished training, best eval result in epoch %d" % epoch_idx)
                     break
-                self.save_model(epoch_idx)
                 start = time()
+        self.save_model(epoch_idx)
         return self.model
 
     @torch.no_grad()      
@@ -754,10 +753,11 @@ class OP_Trainer(AbstractTrainer):
 
     def _shuffle_date(self, interaction):
         # shuffle the data
-        order = torch.randperm(interaction['num'])
-        for key in ['user', 'item', 'itemage', 'target']:
-            value = interaction[key]
-            interaction[key] = value[order]
+        order = torch.randperm(interaction['num']).to(self.device)
+        for key in interaction.keys():
+            if key != 'num':
+                value = interaction[key]
+                interaction[key] = value[order]
         return interaction
     def _numpy2tensor(self, interaction):
         for k in interaction.keys():
@@ -766,17 +766,18 @@ class OP_Trainer(AbstractTrainer):
         return interaction
     
     def fit(self, valid_data=None, verbose=True, saved=True, resampling=False):
-        if self.splitting == 'random':
-            interaction = self._numpy2tensor(self.data.train_interactions)
-            interaction_valid = self._numpy2tensor(self.data.valid_interactions)
-        else: # else, time-based splitting
-            interaction_pos = self._data_pre(self.train)
+        # if self.splitting == 'random':
+        #     interaction = self._numpy2tensor(self.data.train_interactions)
+        #     interaction_valid = self._numpy2tensor(self.data.valid_interactions)
+        # else: # else, time-based splitting, as old-version: generate negs during training
+        #     interaction_pos = self._data_pre(self.train)
+        interaction = self._numpy2tensor(self.data.train_interactions)
+        interaction_valid = self._numpy2tensor(self.data.valid_interactions)
+        
         start = time()
         for epoch_idx in range(self.epochs):
-            if (self.splitting != 'random') and ((epoch_idx == 0) or (resampling)):
-                interaction = self._neg_sampling(interaction_pos, self.train)
-                # target = interaction['target'] 
-                # itemage = interaction['itemage']
+            # if (self.splitting != 'random') and ((epoch_idx == 0) or (resampling)):
+            #     interaction = self._neg_sampling(interaction_pos, self.train)
             train_loss = self._train_epoch(interaction)
             if (epoch_idx + 1) % 1 == 0: # evaluate on valid set
                 # self.load_model()
@@ -792,6 +793,9 @@ class OP_Trainer(AbstractTrainer):
                     break
                 self.save_model(epoch_idx)
                 start = time()
+        if self.splitting != 'random':
+            valid_results, valid_loss = self.evaluate(interaction_valid, samplings=1.0)
+            print("results on fixed valid set: %s" % (str(valid_results)))
         return self.model
 
     @torch.no_grad()      
@@ -826,19 +830,17 @@ class OP_Trainer(AbstractTrainer):
         # scores.clip(min(target), max(target)) # clip the output scores
         return total_loss, scores
     
-    # def interaction_split(self, interaction, ratio=0.125):
-    #     # valid set holds the 12.5% of the full trainset. Then the train:valid:test = 0.7 : 0.1: 0.2 = 7:1:2
-    #     num2 = int(interaction['num'] * ratio) # valid
-    #     num1 = int(interaction['num']) - num2 # train
-    #     reorder = torch.randperm(interaction['num']).to(self.device)
-    #     interaction1, interaction2 = {}, {}
-    #     interaction1['num'], interaction2['num'] = num1, num2
-    #     for k in interaction.key():
-    #         if k != 'num':
-    #             v = interaction[k][reorder]
-    #             interaction1[k] = v[:num1]
-    #             interaction2[k] = v[-num2:]
-    #     return interaction1, interaction2
+    def _interaction_split(self, interaction, ratio=0.1):
+        num2 = int(interaction['num'] * ratio) # valid
+        reorder = torch.randperm(interaction['num']).to(self.device)
+        interaction1, interaction2 = {}, {}
+        interaction1['num'], interaction2['num'] = interaction['num'] - num2, num2
+        for k in interaction.keys():
+            if k != 'num':
+                v = interaction[k][reorder]
+                interaction1[k] = v[:-num2]
+                interaction2[k] = v[-num2:]
+        return interaction1, interaction2
 
     @torch.no_grad()
     def evaluate(self, interaction=None, samplings=0.1):
@@ -987,7 +989,7 @@ class OPPT_Trainer(AbstractTrainer):
 
     def train_valid_split(self, interaction, sampling=0.1):
         num = interaction['num']
-        np.random.seed(2021)
+        # np.random.seed(2021)
         indices = np.random.uniform(size=num)
         train_idx = indices >= sampling
         valid_idx = np.invert(train_idx)
