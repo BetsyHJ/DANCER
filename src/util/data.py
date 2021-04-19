@@ -17,8 +17,9 @@ class Dataset(object):
             self.resplitting_random()
         
         # # add the predicted p(o) for task 2
-        if task == 'OPPT': # "Observed user preference prediction task", add the predicted p(o) for task 2
-            self.train_full = self.merge_predOP(self.train_full)
+        if (task == 'OPPT') and config['debiasing']: # "Observed user preference prediction task", add the predicted p(o) for task 2
+            self.train = self.merge_predOP(self.train)
+            self.valid = self.merge_predOP(self.valid)
             self.test = self.merge_predOP(self.test)
             print("Load predOP (P(O)) done.")
         self.task = task
@@ -64,7 +65,7 @@ class Dataset(object):
         self.test['ItemAge'] = test_itemage
         if self.n_bins is not None:
             self.n_periods = self.n_bins
-        
+
         # # get training and valid observation data for model learning
         # OIPT, do time-based splitting, generate train_interactions and valid_interactions with 9:1 splitting
         if (task == 'OIPT') and (config['splitting'] != 'random'):
@@ -118,26 +119,27 @@ class Dataset(object):
             #     itemage[(timestamp - item_pt) < 0] = -1
             assert len(itemage) == len(items)
         
-        # # # use bins to map the itemage
-        # print('max_period:', max_period)
-        # if self.dataset == 'ml-latest-small':
-        #     itemage_ = np.copy(itemage)
-        #     bins = [-1] + [0, 2, 4, 7, 10, 14, 20]
-        #     print("---------- Using Bins: ", bins[1:], "----------")
-        #     replaces = np.arange(len(bins) - 1)
-        #     for bidx in range(1, len(bins)):
-        #         b = list(range(bins[bidx-1]+1, bins[bidx]+1))
-        #         itemage_[itemage.isin(b)] = replaces[bidx - 1]
-        #     self.n_bins = min(self.n_periods, len(replaces))
-        #     # print(np.unique(itemage, return_counts=True))
-        #     # print(np.unique(itemage_, return_counts=True), '\n')
-        #     # exit(0)
-        #     return itemage_
+        # # use bins to map the itemage
+        if self.task == 'OPPT':
+            print('For mapping itemage to bins, max_period:', max_period)
+            if self.dataset == 'ml-latest-small':
+                itemage_ = np.copy(itemage)
+                bins = [-1] + [0, 2, 4, 7, 10, 14, 20]
+                print("---------- Using Bins: ", bins[1:], "----------")
+                replaces = np.arange(len(bins) - 1)
+                for bidx in range(1, len(bins)):
+                    b = list(range(bins[bidx-1]+1, bins[bidx]+1))
+                    itemage_[itemage.isin(b)] = replaces[bidx - 1]
+                self.n_bins = min(self.n_periods, len(replaces))
+                # print(np.unique(itemage, return_counts=True))
+                # print(np.unique(itemage_, return_counts=True), '\n')
+                # exit(0)
+                return itemage_
         return itemage
 
     def merge_predOP(self, train):
         if self.dataset == 'ml-latest-small':
-            filename = self.path + self.dataset + '/predOP_tmf_fast_v.csv'
+            filename = self.path + self.dataset + '/predOP_tmtf.csv'
         elif self.dataset == 'ml-100k':
             filename = self.path + self.dataset + '/predOP_mf.csv'
         else:
@@ -160,37 +162,64 @@ class Dataset(object):
         # assert len(output) == len(train)
         return output
 
-    def resplitting_random(self, ratio = 0.25):
-        if os.path.exists(self.path + self.dataset + '/train_random.csv'):
-            self.train_full = self._load_ratings(self.path + self.dataset + '/train_random.csv')
-            self.test = self._load_ratings(self.path + self.dataset + '/test_random.csv')
-            # only keep ['UserId', 'ItemId', 'rating', 'timestamp']
-            cols = ['UserId', 'ItemId', 'rating', 'timestamp']
-            self.train_full = self.train_full[cols]
-            self.test = self.test[cols]
-            print("Loading randomly-splitted training and test set. Done.")
+    def resplitting_random(self):
+        # if os.path.exists(self.path + self.dataset + '/train_random_OPPT_old.csv'):
+        #     self.train_full = self._load_ratings(self.path + self.dataset + '/train_random_OPPT_old.csv')
+        #     self.test = self._load_ratings(self.path + self.dataset + '/test_random_OPPT_old.csv')
+        #     self.train, self.valid = self.train_full, self.train_full
+        #     print("Loading randomly-splitted train, valid and test set for OPPT (Task 2). Done.")
+        #     return
+        if os.path.exists(self.path + self.dataset + '/valid_random_OPPT.csv'):
+            self.train_full = None
+            self.train = self._load_ratings(self.path + self.dataset + '/train_random_OPPT.csv')
+            self.valid = self._load_ratings(self.path + self.dataset + '/valid_random_OPPT.csv')
+            self.test = self._load_ratings(self.path + self.dataset + '/test_random_OPPT.csv')
+            self.train_full = pd.concat([self.train, self.valid], axis=0, ignore_index=True)
+            print("Nr in train, valid, test are %d, %d, %d" % (len(self.train), len(self.valid), len(self.test)))
+            n_valid, n_test = len(self.valid), len(self.test)
+            self.valid = self.valid.drop(self.valid[~self.valid['ItemId'].isin(self.train['ItemId'].unique())].index)
+            self.test = self.test.drop(self.test[~self.test['ItemId'].isin(self.train['ItemId'].unique())].index)
+            print("Nr in valid and test whose items are not in trainset: %d and %d" % (n_valid - len(self.valid), n_test - len(self.test)))
+            print("Loading randomly-splitted train, valid and test set for OPPT (Task 2). Done.")
             return
         print("Generate the random-splitted training/test set.")
         # # combine train_full and test as a whole dataset
         df = pd.concat([self.train_full, self.test], ignore_index=True)
         # # random splitting by user
-        df_train, df_test = [], []
+        df_train, df_valid, df_test = [], [], []
         np.random.seed(2021)
         for (u, group) in df.groupby(['UserId']):
-            group_ = group.sample(frac=1)
-            n_test = int(ratio * len(group_))
-            df_train.append(group_[:-n_test])
+            group_ = group.sample(frac=1, random_state=np.random.randint(10000))
+            n_test = int(0.2 * len(group_))
+            n_train = int(0.7 * len(group_))
+            df_train.append(group_[:n_train])
+            df_valid.append(group_[n_train:-n_test])
             df_test.append(group_[-n_test:])
-
-        self.train_full = pd.concat(df_train, axis=0)
+        self.train_full = None
+        self.train = pd.concat(df_train, axis=0)
+        self.valid = pd.concat(df_valid, axis=0)
         self.test = pd.concat(df_test, axis=0)
+        assert (len(self.train) + len(self.valid) + len(self.test)) == len(df)
+
+        # # # random splitting over all
+        # df_ = df.sample(frac=1, random_state=2021)
+        # n_train, n_test = int(len(df_) * 0.7), int(len(df_) * 0.2)
+        # self.train = df_[:n_train]
+        # self.valid = df_[n_train:-n_test]
+        # self.test = df_[-n_test:]
+
         # only keep ['UserId', 'ItemId', 'rating', 'timestamp']
         cols = ['UserId', 'ItemId', 'rating', 'timestamp']
-        self.train_full = self.train_full[cols]
+        self.train = self.train[cols]
+        self.valid = self.valid[cols]
         self.test = self.test[cols]
-        self.train_full.to_csv(self.path + self.dataset + '/train_random.csv', index=False)
-        self.test.to_csv(self.path + self.dataset + '/test_random.csv', index=False)
-        print("Saving randomly-splitted dataset. Done.")
+        self.train_full = pd.concat([self.train, self.valid], axis=0, ignore_index=True)
+        print("Nr in train, valid, test are %d, %d, %d" % (len(self.train), len(self.valid), len(self.test)))
+        print("Avg-rating in train, valid, test are %.6f, %.6f, %.6f" % (self.train['rating'].mean(), self.valid['rating'].mean(), self.test['rating'].mean()))
+        # self.train.to_csv(self.path + self.dataset + '/train_random_OPPT.csv', index=False)
+        # self.valid.to_csv(self.path + self.dataset + '/valid_random_OPPT.csv', index=False)
+        # self.test.to_csv(self.path + self.dataset + '/test_random_OPPT.csv', index=False)
+        print("For OPPT (task 2), Saving randomly-splitted dataset. Done.")
     
     def interation_data_time_OIPT(self, ratings):
         if self.task.upper() != 'OIPT':

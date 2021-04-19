@@ -73,6 +73,8 @@ def run_dqn():
     if 'task' in conf:
         task = conf['task']
     config['task'] = task
+    if task.upper() == 'OPPT':
+        config['loss_type'] = 'mse'
     _logging_(conf, config)
     ## loading data
     data = Dataset(conf, task=task)
@@ -83,7 +85,15 @@ def run_dqn():
         config['splitting'] = 'time'
         if 'splitting' in conf:
             config['splitting'] = conf['splitting']
-
+    # add some fixed parameters
+    config['path'] = conf['data.input.path']
+    config['dataset'] = conf['data.input.dataset']
+    config['epochs'] = 500
+    if conf['debiasing'].lower() == 'ips':
+        config['debiasing'] = True
+    else:
+        config['debiasing'] = False
+        
     # Super simple baselines just need some statistic info without training process.
     if 'b' in conf['mode']:
         if config['task'] == 'OIPT':
@@ -96,18 +106,9 @@ def run_dqn():
             #         print("\n*-*-*-*-*- B%d -*-*-*-*-*" % i)
             #         evaluator.evaluate(baselines='b%d'%i, subset=subset)
         else:
-            evaluator = OPPT_Evaluator(None, None, data)
+            evaluator = OPPT_Evaluator(config, None, data)
             evaluator.evaluate(baselines=conf['mode'])
         exit(0)
-
-    # add some fixed parameters
-    config['path'] = conf['data.input.path']
-    config['dataset'] = conf['data.input.dataset']
-    config['epochs'] = 500
-    if conf['debiasing'].lower() == 'ips':
-        config['debiasing'] = True
-    else:
-        config['debiasing'] = False
     
     if conf['mode'].lower() == "tmf":
         MODEL = TMF

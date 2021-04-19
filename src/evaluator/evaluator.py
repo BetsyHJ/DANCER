@@ -177,6 +177,22 @@ class AbstractEvaluator(object):
         """ to calculate the metrics"""
         raise NotImplementedError
 
+    def _merge_interactions(self, inte1, inte2):
+        inte_ = {}
+        keys = list(set(inte1.keys()) & set(inte2.keys()))
+        for key in keys:
+            if key == 'num':
+                inte_[key] = inte1[key] + inte2[key]
+            else:
+                inte_[key] = torch.cat((inte1[key], inte2[key]), 0)
+        return inte_
+
+    def _numpy2tensor(self, interaction):
+        for k in interaction.keys():
+            if k != 'num':
+                interaction[k] = torch.from_numpy(interaction[k]).to(self.device)
+        return interaction
+
 class Evaluator(AbstractEvaluator):
     def __init__(self, config, model, data):
         super(Evaluator, self).__init__(config, model, data)
@@ -473,7 +489,8 @@ class OP_Evaluator(AbstractEvaluator):
         
     @torch.no_grad() 
     def evaluate(self, ub='false', threshold=1e-3, baselines = None, subset = None):
-        self._save_pred_OP()
+        # self._save_pred_OP()
+        # self._save_pred_OP(alldata=True)
 
         torch.manual_seed(517)
         np.random.seed(517)
@@ -537,9 +554,20 @@ class OP_Evaluator(AbstractEvaluator):
         # print(','.join([str(x) for x in p_T_test]))
         # print(','.join([str(int((itemages == i).sum())) for i in range(self.n_periods)]))
 
-    def _save_pred_OP(self):
-        data = pd.concat([self.data.train_full, self.data.test], ignore_index=True)
-        interaction = self._data_pre(data)
+    def _save_pred_OP(self, alldata = False):
+        if not alldata:
+            # only on the observed ratings for RQ2
+            data = pd.concat([self.data.train_full, self.data.test], ignore_index=True)
+            interaction = self._data_pre(data)
+        elif self.splitting == 'random':
+            # for all the possible data used in RQ3
+            interaction = self._merge_interactions(self._numpy2tensor(self.data.train_interactions), self._numpy2tensor(self.data.valid_interactions))
+            interaction = self._merge_interactions(interaction, self._numpy2tensor(self.data.test_interactions))
+            print("The total number of interactions is %d = %d + %d + %d" % (interaction['num'], self.data.train_interactions['num'], self.data.valid_interactions['num'], self.data.test_interactions['num']))
+            data = pd.DataFrame({'UserId': interaction['user'].cpu().numpy(), 'ItemId': interaction['item'].cpu().numpy(), 'itemage': interaction['itemage'].cpu().numpy()})
+        else:
+            raise NotImplementedError("Generate P(O) on all possible (u, i, t) during user presence only on randomly setting")
+
         scores = self._eval_epoch(interaction).cpu().numpy()
         if self.splitting != 'random':
             scores /= 4.0
@@ -547,10 +575,18 @@ class OP_Evaluator(AbstractEvaluator):
         data['predOP'] = scores
         if 'ItemAge' not in data:
             data['itemage'] = interaction['itemage'].cpu().numpy()
-        print("--------- Save the predicted Observation Probabilities of all observed (u,i,t), Nr. %d ----------" % interaction['num'])
-        path = self.config['path'] + self.config['dataset'] + '/predOP_' + self.config['mode'] + '.csv'
-        data = data[['UserId', 'ItemId', 'rating', 'timestamp', 'itemage', 'predOP']]
+        if not alldata:
+            path = self.config['path'] + self.config['dataset'] + '/predOP_' + self.config['mode'] + '.csv'
+            print("--------- Save the predicted Observation Probabilities of all observed (u,i,t), Nr. %d ----------" % interaction['num'])
+            data = data[['UserId', 'ItemId', 'rating', 'timestamp', 'itemage', 'predOP']]
+        else:
+            path = self.config['path'] + 'simulation' + '/predOP_' + self.config['mode'] + '.csv'
+            print("--------- Save the predicted Observation Probabilities of all possible (u,i,t), Nr. %d ----------" % interaction['num'])
+            data = data[['UserId', 'ItemId', 'itemage', 'predOP']]
         data.to_csv(path, sep=',', header=True, index=False)
+        results = cal_op_metrics(scores, interaction['target'].cpu().numpy())
+        print("Results on the whole data:", '\t'.join(results.keys()), '\n', '\t'.join([str(x) for x in results.values()]))
+        # exit(0)
 
     
     def baselines(self, interaction, variety=1, subset = None): # we should use the training set rather than test set.
@@ -685,14 +721,25 @@ def ndcgs_(preds, denominator=None):
     return dcgs / idcgs
 
 
-class OPPT_Evaluator(OP_Evaluator):
+class OPPT_Evaluator(AbstractEvaluator):
     def __init__(self, config, model, data):
         super(OPPT_Evaluator, self).__init__(config, model, data)
+
+        self.n_items = self.data.n_items
+        self.n_users = self.data.n_users
+        self.n_periods = self.data.n_periods
+        self.item_birthdate = torch.from_numpy(self.data._get_item_birthdate()).to(self.device)
+        
+        self.period_type = self.data.period_type
+        if self.period_type == 'month':
+            self.period_s = 30 * 24 * 60 * 60
+        elif self.period_type == 'year':
+            self.period_s = 365 * 24 * 60 * 60
+
         self.debiasing = config['debiasing']
 
-    def _data_pre_next_month(self):
+    def _data_pre(self):
         self.test = self.data.test
-        # self.test = self._filter_test_next_month()
         test = self.test
         uid_list = torch.from_numpy(np.array(test['UserId'].values, dtype=int)).to(self.device)
         iid_list = torch.from_numpy(np.array(test['ItemId'].values, dtype=int)).to(self.device)
@@ -734,7 +781,9 @@ class OPPT_Evaluator(OP_Evaluator):
 
     @torch.no_grad() 
     def evaluate(self, ub='false', threshold=1e-3, baselines = None, subset = None):
-        interaction = self._data_pre_next_month()
+        # self._save_pred_ratings()
+
+        interaction = self._data_pre()
         if baselines is not None:
             scores = self.baselines(interaction, variety=int(baselines[1]))
         else:
@@ -742,23 +791,11 @@ class OPPT_Evaluator(OP_Evaluator):
         targets = interaction['target']
         predOP = None
         if self.debiasing:
-            predOP = interaction['predOP'].cpu().numpy()
+            predOP = np.reciprocal(interaction['predOP'].cpu().numpy()) # IPS weighting
         results = cal_ratpred_metrics(scores.cpu().numpy(), targets.cpu().numpy(), predOP = predOP, users = interaction['user'].cpu().numpy())
         print('\t'.join(results.keys()), '\n', '\t'.join([str(x) for x in results.values()]))
 
-        self._save_something(preds=scores.cpu().numpy())
-        # mses_ = (scores.cpu().numpy() - targets.cpu().numpy()) ** 2
-        # idx = mses_ >= 4
-        # uids = interaction['user'][idx]#.cpu().numpy()[:5]
-        # iids = interaction['item'][idx]#.cpu().numpy()[:5]
-        # # print("users: ", uids, '\nitems:', iids, '\nmse:', mses_[idx][:5])
-        # print("users: ", uids.unique(return_counts=True), '\nitems:', iids.unique(return_counts=True))
-        # exit(0)
-
-        # # evaluate it as a ranking task
-        # results = cal_ob_pred2ranking_metrics(interaction, scores)
-        # print('\t'.join(results.keys()), '\n', '\t'.join([str(x) for x in results.values()]))
-        # # print("results on testset: %s" % (str(results)))
+        # self._save_something(preds=scores.cpu().numpy())
         return results
 
     
@@ -804,3 +841,43 @@ class OPPT_Evaluator(OP_Evaluator):
         # preds = preds.clip(min(targets), max(targets))
         # preds = np.round(preds * 2) / 2.0
         # self.test['pred'] = preds
+
+    def _save_pred_ratings(self):
+        assert self.debiasing
+        path = self.config['path'] + 'simulation' + '/predOP_tmtf.csv'
+        data = pd.read_csv(path, sep=',', header=0)
+        interaction = {}
+        interaction['num'] = len(data)
+        interaction['user'] = np.array(data['UserId'].values, dtype=int)
+        interaction['item'] = np.array(data['ItemId'].values, dtype=int)
+        # mapping itemage to bins
+        bins = [-1] + [0, 2, 4, 7, 10, 14, 20]
+        print("---------- For mapping itemage to bins: ", bins[1:], "----------")
+        itemage = np.copy(np.array(data['itemage'].values, dtype=int))
+        itemage_ = itemage
+        replaces = np.arange(len(bins) - 1)
+        for bidx in range(1, len(bins)):
+            b = list(range(bins[bidx-1]+1, bins[bidx]+1))
+            itemage_[np.isin(itemage, b)] = replaces[bidx - 1]
+            # print(b, itemage[:10], itemage_[:10])
+        interaction['itemage'] = np.array(itemage_, dtype=int)
+        interaction = self._numpy2tensor(interaction)
+        print("The total number of interactions is %d " % (interaction['num']))
+
+        scores = self._eval_epoch(interaction).cpu().numpy()
+        scores = np.round((scores * 2.0).clip(1, 10)).astype(int) * 1.0 / 2
+        data['rating'] = scores
+        
+        data = data[['UserId','ItemId','itemage', 'rating', 'predOP']]
+        data.to_csv(self.config['path'] + 'simulation' + '/pred_ratings_' + self.config['mode'] + '.csv', sep=',', header=True, index=False)
+        print(data[:10])
+        # also save presence of users: UserId, firsttime, lasttime
+        observed_data = pd.concat([self.data.train, self.data.valid, self.data.test], axis=0, ignore_index=True)
+        users, firsttimes, lasttimes = [], [], []
+        for u, group in observed_data.groupby(by=['UserId']):
+            users.append(u)
+            firsttimes.append(min(group['timestamp']))
+            lasttimes.append(max(group['timestamp']))
+        df = pd.DataFrame({'UserId': users, 'firsttime': np.array(firsttimes), 'lasttime': np.array(lasttimes)})
+        df.to_csv(self.config['path'] + 'simulation' + '/user_presence.csv', sep=',', header=True, index=False)
+        # exit(0)

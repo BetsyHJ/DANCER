@@ -22,7 +22,7 @@ class AbstractTrainer(object):
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.model = model.to(self.device)
         self.data = data
-        self.train = self.data.train_full
+        # self.train = self.data.train_full
         self.learner = config['optimizer']
         self.learning_rate = float(config['learning_rate'])
         self.l2_reg = 0
@@ -912,18 +912,31 @@ class OPPT_Trainer(AbstractTrainer):
         '''
         uid_list = torch.from_numpy(np.array(train['UserId'].values, dtype=int)).to(self.device)
         iid_list = torch.from_numpy(np.array(train['ItemId'].values, dtype=int)).to(self.device)
-        itemage = torch.from_numpy(np.array(train['ItemAge'].values, dtype=int)).to(self.device)
+        if 'ItemAge' not in train.columns:
+            itemage = self.data.get_itemage(train['ItemId'], train['timestamp'])
+            itemage = torch.from_numpy(np.array(itemage, dtype=int)).to(self.device)
+        else:
+            itemage = torch.from_numpy(np.array(train['ItemAge'].values, dtype=int)).to(self.device)
         # target = torch.from_numpy(np.where(train['rating'].values > 3, 1, 0).astype(int)).to(self.device) # rating>3 like=1, <=3 dislike=0
-        target = torch.from_numpy(train['rating'].values).to(self.device) # rating>3 like=1, <=3 dislike=0
-        predOP = torch.from_numpy(np.array(train['predOP'].values, dtype=float)).to(self.device)
+        target = torch.from_numpy(train['rating'].values).to(self.device)
+        if 'ips' in self.debiasing:
+            predOP = torch.from_numpy(np.array(train['predOP'].values, dtype=float)).to(self.device)
         # target = torch.from_numpy(np.array(train['rating'].values, dtype=int)-1).to(self.device)
+
+        # train_itemage = self.get_itemage(self.train['ItemId'], self.train['timestamp'])
+        # valid_itemage = self.get_itemage(self.valid['ItemId'], self.valid['timestamp'])
+        # print("The distributions of p_T in train set:", '\n', '[', ', '.join([str(self.train[train_itemage == t]['rating'].mean()) for t in range(self.n_periods)]), ']')
+        # print("The distributions of p_T in valid set:", '\n', '[', ', '.join([str(self.valid[valid_itemage == t]['rating'].mean()) for t in range(self.n_periods)]), ']')
+        # print("The distributions of p_T in subset:", '\n', '[', ', '.join([str(train[test_itemage == t]['rating'].mean()) for t in range(self.n_periods)]), ']')
+        # exit(0)
 
         interaction = {}
         interaction['user'] = uid_list
         interaction['item'] = iid_list
         interaction['target'] = target
         interaction['itemage'] = itemage
-        interaction['predOP'] = predOP
+        if 'ips' in self.debiasing:
+            interaction['predOP'] = predOP
         interaction['num'] = uid_list.size()[0]
         return interaction
 
@@ -942,7 +955,8 @@ class OPPT_Trainer(AbstractTrainer):
         target = interaction['target']
         itemage = interaction['itemage']
         num = interaction['num']
-        predOP = interaction['predOP']
+        if 'ips' in self.debiasing:
+            inv_predOP = torch.reciprocal(interaction['predOP'])
         # train on batch
         total_loss = 0
         start_idx = 0
@@ -953,8 +967,8 @@ class OPPT_Trainer(AbstractTrainer):
                 'item': item[start_idx:end_idx], 'target': target[start_idx:end_idx], \
                 'itemage': itemage[start_idx:end_idx]})
             # In task OPPT, the reduction of calculate_loss is none, then ...
-            if 'naive' not in self.debiasing.lower():
-                losses = torch.mul(losses, predOP[start_idx:end_idx]).sum() # w/ P(O)
+            if 'ips' in self.debiasing:
+                losses = torch.mul(losses, inv_predOP[start_idx:end_idx]).mean() # w/ P(O)
             else:
                 losses = losses.mean() # /o P(O)
             total_loss += losses.item()
@@ -965,10 +979,10 @@ class OPPT_Trainer(AbstractTrainer):
         return total_loss
 
     def fit(self, valid_data=None, verbose=True, saved=True, resampling=True):
-        interaction = self._data_pre(self.train)
-        interaction, interaction_valid = self.train_valid_split(interaction, sampling=0.05)
-        # print(self.model.state_dict().keys())
-        # interaction_valid = interaction
+        # interaction = self._data_pre(self.data.train_full)
+        # interaction, interaction_valid = self.train_valid_split(interaction, sampling=0.1)
+        interaction = self._data_pre(self.data.train)
+        interaction_valid = self._data_pre(self.data.valid)
 
         start = time()
         for epoch_idx in range(self.epochs):
@@ -976,6 +990,7 @@ class OPPT_Trainer(AbstractTrainer):
                 interaction = self._shuffle_date(interaction)
             train_loss = self._train_epoch(interaction)
             if (epoch_idx + 1) % 1 == 0: # evaluate on valid set
+                # _, interaction_valid = self.train_valid_split(interaction, sampling=0.25)
                 valid_results, valid_loss = self.evaluate(interaction_valid)
                 print("epoch %d, time-consumin: %f s, train-loss: %f, valid-loss: %f, \nresults on validset: %s" % (epoch_idx+1, time()-start, train_loss, valid_loss, str(valid_results)))
                 self.best_valid_score, _, stop_flag, _ = self._early_stopping(valid_loss, self.best_valid_score, epoch_idx, 10, bigger=False)
@@ -1014,7 +1029,10 @@ class OPPT_Trainer(AbstractTrainer):
         # print(targets.size(), scores.size())
         assert scores.size() == targets.size()
         # results = cal_op_metrics(scores.cpu().numpy(), targets.cpu().numpy(), w_sigmoid=False)
-        results = cal_ratpred_metrics(scores.cpu().numpy(), targets.cpu().numpy())
+        predOP = None
+        if 'ips' in self.debiasing:
+            predOP = np.reciprocal(interaction['predOP'].cpu().numpy()) # IPS 
+        results = cal_ratpred_metrics(scores.cpu().numpy(), targets.cpu().numpy(), predOP = predOP, users = interaction['user'].cpu().numpy())
         return results, losses
 
     @torch.no_grad()      
@@ -1023,7 +1041,8 @@ class OPPT_Trainer(AbstractTrainer):
         item = interaction['item']
         target = interaction['target']
         itemage = interaction['itemage']
-        predOP = interaction['predOP']
+        if 'ips' in self.debiasing:
+            inv_predOP = torch.reciprocal(interaction['predOP'])
         num = interaction['num']
 
         start_idx = 0
@@ -1034,8 +1053,8 @@ class OPPT_Trainer(AbstractTrainer):
             interaction_batch = {'user': user[start_idx:end_idx], \
                 'item': item[start_idx:end_idx], 'target': target[start_idx:end_idx], 'itemage': itemage[start_idx:end_idx]}
             losses = self.model.calculate_loss(interaction_batch)
-            if self.debiasing:
-                losses = torch.mul(losses, predOP[start_idx: end_idx]).sum() # w/ P(O)
+            if 'ips' in self.debiasing:
+                losses = torch.mul(losses, inv_predOP[start_idx: end_idx]).mean() # w/ P(O)
             else:
                 losses = losses.mean() # /o P(O)
             total_loss += losses.item()
