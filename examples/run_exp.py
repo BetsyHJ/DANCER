@@ -16,10 +16,9 @@ from offlineExp.tmf import TMF, TMF_variety, TMF_fast, TMF_fast_variety
 from offlineExp.mf import MF, MF_v
 from offlineExp.tf import TF, TMTF
 # from trainer.trainer import TARS_Trainer as Trainer
-from trainer.trainer import OP_Trainer 
-from trainer.trainer import OPPT_Trainer
+from trainer.trainer import OP_Trainer, OPPT_Trainer, TART_Trainer
 
-from evaluator.evaluator import OP_Evaluator, OPPT_Evaluator
+from evaluator.evaluator import OP_Evaluator, OPPT_Evaluator, TART_Evaluator
 
 # np.random.seed(2020)
 
@@ -69,11 +68,12 @@ def run_dqn():
         torch.manual_seed(config['seed'])
 
     task = 'OIPT'
-    # task = 'OPPT'
+    # task = 'OPPT' # task 2: in paper, named as UPPT
+    # task = 'TART' # task 3, only on simulated data
     if 'task' in conf:
         task = conf['task']
     config['task'] = task
-    if task.upper() == 'OPPT':
+    if task.upper() in ['OPPT', 'TART']:
         config['loss_type'] = 'mse'
     _logging_(conf, config)
     ## loading data
@@ -105,8 +105,11 @@ def run_dqn():
             #     for i in range(1, 4):
             #         print("\n*-*-*-*-*- B%d -*-*-*-*-*" % i)
             #         evaluator.evaluate(baselines='b%d'%i, subset=subset)
-        else:
+        elif config['task'] == 'OPPT':
             evaluator = OPPT_Evaluator(config, None, data)
+            evaluator.evaluate(baselines=conf['mode'])
+        else:
+            evaluator = TART_Evaluator(config, None, data)
             evaluator.evaluate(baselines=conf['mode'])
         exit(0)
     
@@ -136,6 +139,8 @@ def run_dqn():
     model = MODEL(config, data, debiasing=config['debiasing'])
     if ('task' in config) and (config['task']=='OPPT'):
         Trainer = OPPT_Trainer
+    elif ('task' in config) and (config['task']=='TART'):
+        Trainer = TART_Trainer
     else:
         Trainer = OP_Trainer
     trainer = Trainer(config, model, data)
@@ -150,6 +155,8 @@ def run_dqn():
     model.eval()
     if ('task' in config) and (config['task']=='OPPT'):
         Evaluator = OPPT_Evaluator
+    elif ('task' in config) and (config['task']=='TART'):
+        Evaluator = TART_Evaluator
     else:
         Evaluator = OP_Evaluator
     evaluator = Evaluator(config, model, data)

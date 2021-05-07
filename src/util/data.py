@@ -9,9 +9,35 @@ class Dataset(object):
         dataset = config['data.input.dataset']
         self.path = path
         self.dataset = dataset
-        # load data
+        assert (task.upper() != 'TART') or (dataset == 'simulation') # make sure when the task is TART, we use simulated dataset
+        assert (task.upper() == 'TART') or (dataset != 'simulation') # make sure simulated dataset be used only when task is TART
+
+        # # load data
+        if task.upper() == 'TART':
+            # train columns: [UserId,ItemId,itemage,rating,predOP]
+            self.train = self._load_ratings(path + dataset + '/train.csv')
+            self.valid = self._load_ratings(path + dataset + '/valid.csv')
+            # test columns: [UserId,ItemId,rating,itemage]
+            self.test = self._load_ratings(path + dataset + '/test.csv')
+            self.n_users = max(self.train['UserId']) + 1 #max(max(self.train['UserId']), max(self.valid['UserId']))
+            self.n_items = max(self.train['ItemId']) + 1 #max(max(self.train['ItemId']), max(self.valid['ItemId']))
+            self.n_periods = max(max(self.train['itemage']), max(self.valid['itemage']), max(self.test['itemage'])) + 1
+            # map the itemage into the bins:
+            self.train['itemage'], _ = self.years2bins(self.train['itemage'])
+            self.valid['itemage'], _ = self.years2bins(self.valid['itemage'])
+            self.test['itemage'], n_bins = self.years2bins(self.test['itemage'])
+            self.n_periods = n_bins
+            # print(self.train['itemage'].values[800:850])
+            # del items in test but not in train
+            n_test = len(self.test)
+            self.test = self.test[self.test['ItemId'].isin(self.train['ItemId'].unique())]
+            print("Simulated test: %d interactions whose items do not appear in the training set. And thus Nr. testset is %d." % (n_test - len(self.test), len(self.test)))
+            print("(#users : %d, #items : %d, period_type : %s, n_periods : %d)" % (self.n_users, self.n_items, config['data.itemage.type'].lower(), self.n_periods))
+            return
+
         self.train_full = self._load_ratings(path + dataset + '/train.csv')
         self.test = self._load_ratings(path + dataset + '/test.csv')
+        # self._get_item_birthdate() # put it here to generate ./data/simulation/item_birthdate.csv
         # # for task OPPT, we do randomly training-test splitting
         if task == 'OPPT':
             self.resplitting_random()
@@ -78,12 +104,27 @@ class Dataset(object):
         ratings = pd.read_csv(ratingfile, sep=sep, header=0)
         # ratings.columns = ['UserId', 'ItemId', 'rating', 'timestamp', 'ctr']
         return ratings
+    
+    def years2bins(self, itemage):
+        bins = [-1] + [0, 2, 4, 7, 10, 14, 20] 
+        print("---------- Using Bins: ", bins[1:], "----------")
+        itemage_ = np.copy(itemage)
+        replaces = np.arange(len(bins) - 1)
+        for bidx in range(1, len(bins)):
+            b = list(range(bins[bidx-1]+1, bins[bidx]+1))
+            itemage_[itemage.isin(b)] = replaces[bidx - 1]
+        n_bins = min(self.n_periods, len(replaces))
+        return itemage_, n_bins
 
     def _get_item_birthdate(self):
-        item_birthdate = np.zeros(self.n_items, dtype='int64')
         d = pd.concat([self.train_full, self.test], ignore_index=True)
+        # self.n_items = max(d['ItemId'])+1
+        item_birthdate = np.zeros(self.n_items, dtype='int64')
         for i, group in d.groupby(['ItemId']):
             item_birthdate[i] = min(group['timestamp'].to_list())
+        # df = pd.DataFrame(data=np.stack((np.arange(self.n_items), item_birthdate), 1), columns = ['ItemId', 'birthdate'])
+        # df.to_csv(self.path + '/simulation/item_birthdate.csv', sep=',', header=True, index=False)
+        # exit(0)
         return item_birthdate
     
     def get_itemage(self, items, timestamp, item_birthdate = None, del_young_items=False):

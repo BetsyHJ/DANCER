@@ -1070,4 +1070,141 @@ class OPPT_Trainer(AbstractTrainer):
         # np.savetxt('preds_onValid.csv', preds_)
         return total_loss, scores
     
-    
+
+class TART_Trainer(AbstractTrainer):
+    '''
+    Time-Aware Recommendation Task (TART) is to predict the ratings of users and recommend items to users.
+    The model w/o debiasing only learns and evaluates on the simuated dataset, where we generate:
+    data.train/valid: [UserId,ItemId,itemage,rating,predOP], and data.test: [UserId,ItemId,itemage,rating]
+    '''
+    def __init__(self, config, model, data):
+        super(TART_Trainer, self).__init__(config, model, data)
+        if config['debiasing']:
+            self.debiasing = "_ips"
+        else:
+            self.debiasing = '_naive'
+        self.saved_model_file = "./checkpoint_dir/TART_" + config['dataset'] + '_' + config['mode'] + self.debiasing
+        print("model will be saved into:", self.saved_model_file)
+        
+        self.optimizer = config['optimizer']
+        self.epochs = config['epochs']
+        self.batch_size = int(config['batch_size'])
+        self.n_users = self.data.n_users
+        self.n_items = self.data.n_items
+        self.n_periods = self.data.n_periods
+
+        self.optimizer = self._build_optimizer()
+        
+    def _data_pre(self, train):
+        '''
+        Different from OIPT, we only need the observed data rather than with negatives (unobservation indicators).
+        Return: (u, i, temporal_content, p(o_{u,i,t}), y), y is one-hot vector
+        '''
+        interaction = {}
+        interaction['user'] = torch.from_numpy(np.array(train['UserId'].values, dtype=int)).to(self.device)
+        interaction['item'] = torch.from_numpy(np.array(train['ItemId'].values, dtype=int)).to(self.device)
+        interaction['itemage'] = torch.from_numpy(np.array(train['itemage'].values, dtype=int)).to(self.device)
+        interaction['target'] = torch.from_numpy(train['rating'].values).to(self.device)
+        interaction['predOP'] = torch.from_numpy(np.array(train['predOP'].values, dtype=float)).to(self.device)
+        interaction['num'] = len(train)
+        return interaction
+
+    def _shuffle_date(self, interaction):
+        # shuffle the data
+        order = torch.randperm(interaction['num'])
+        for key in interaction.keys():
+            if key != 'num':
+                value = interaction[key]
+                interaction[key] = value[order]
+        return interaction
+
+    def _train_epoch(self, interaction):
+        user = interaction['user']
+        item = interaction['item']
+        target = interaction['target']
+        itemage = interaction['itemage']
+        num = interaction['num']
+        if 'ips' in self.debiasing:
+            inv_predOP = torch.reciprocal(interaction['predOP'])
+        # train on batch
+        total_loss = 0
+        start_idx = 0
+        end_idx = start_idx + self.batch_size
+        while start_idx < num:
+            self.optimizer.zero_grad()
+            losses = self.model.calculate_loss({'user': user[start_idx:end_idx], \
+                'item': item[start_idx:end_idx], 'target': target[start_idx:end_idx], \
+                'itemage': itemage[start_idx:end_idx]})
+            # In task TART, the reduction of calculate_loss is none, then ...
+            if 'ips' in self.debiasing:
+                losses = torch.mul(losses, inv_predOP[start_idx:end_idx]).mean() #.sum() / (self.n_users * self.n_items) # w/ P(O)
+            else:
+                losses = losses.mean() # /o P(O)
+            total_loss += losses.item()
+            losses.backward()
+            self.optimizer.step()
+            start_idx = end_idx
+            end_idx += self.batch_size
+        return total_loss
+
+    def fit(self, valid_data=None, verbose=True, saved=True, resampling=True):
+        interaction = self._data_pre(self.data.train)
+        interaction_valid = self._data_pre(self.data.valid)
+
+        start = time()
+        for epoch_idx in range(self.epochs):
+            if resampling:
+                interaction = self._shuffle_date(interaction)
+            train_loss = self._train_epoch(interaction)
+            if (epoch_idx + 1) % 1 == 0: # evaluate on valid set
+                valid_results, valid_loss = self.evaluate(interaction_valid)
+                print("epoch %d, time-consumin: %f s, train-loss: %f, valid-loss: %f, \nresults on validset: %s" % (epoch_idx+1, time()-start, train_loss, valid_loss, str(valid_results)))
+                self.best_valid_score, _, stop_flag, _ = self._early_stopping(valid_loss, self.best_valid_score, epoch_idx, 10, bigger=False)
+                if stop_flag:
+                    print("Finished training, best eval result in epoch %d" % epoch_idx)
+                    break
+                start = time()
+            self.save_model(epoch_idx)
+        return self.model
+
+    @torch.no_grad()
+    def evaluate(self, interaction):
+        losses, scores = self._eval_epoch(interaction)
+        targets = interaction['target']
+        assert scores.size() == targets.size()
+        # results = cal_op_metrics(scores.cpu().numpy(), targets.cpu().numpy(), w_sigmoid=False)
+        predOP = None
+        if 'ips' in self.debiasing:
+            predOP = np.reciprocal(interaction['predOP'].cpu().numpy()) # IPS 
+        results = cal_ratpred_metrics(scores.cpu().numpy(), targets.cpu().numpy(), predOP = predOP, users = interaction['user'].cpu().numpy())
+        return results, losses
+
+    @torch.no_grad()      
+    def _eval_epoch(self, interaction):
+        user = interaction['user']
+        item = interaction['item']
+        target = interaction['target']
+        itemage = interaction['itemage']
+        if 'ips' in self.debiasing:
+            inv_predOP = torch.reciprocal(interaction['predOP'])
+        num = interaction['num']
+
+        start_idx = 0
+        end_idx = start_idx + self.batch_size
+        total_loss = 0
+        scores = []
+        while start_idx < num:
+            interaction_batch = {'user': user[start_idx:end_idx], \
+                'item': item[start_idx:end_idx], 'target': target[start_idx:end_idx], 'itemage': itemage[start_idx:end_idx]}
+            losses = self.model.calculate_loss(interaction_batch)
+            if 'ips' in self.debiasing:
+                losses = torch.mul(losses, inv_predOP[start_idx: end_idx]).mean() # w/ P(O)
+            else:
+                losses = losses.mean() # /o P(O)
+            total_loss += losses.item()
+            scores.append(self.model.predict(interaction_batch))
+            start_idx = end_idx
+            end_idx += self.batch_size
+            # print(scores[-1].size())
+        scores = torch.cat(scores, 0)
+        return total_loss, scores

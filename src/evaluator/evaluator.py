@@ -1,6 +1,7 @@
 import numpy as np
 import pandas as pd
 import torch
+from sklearn.metrics import ndcg_score
 
 # metric definition
 # target position starts from 1 to m.
@@ -693,6 +694,45 @@ def cal_ob_pred2ranking_metrics(interaction, scores, K=10):
     results['NDCG@%d'%K] = (np.array(NDCG)).mean()
     return results
 
+def cal_rating2ranking_metrics(interaction, scores, K=10):
+    users, items = interaction['user'].cpu().numpy(), interaction['item'].cpu().numpy()
+    targets = interaction['target'].cpu().numpy()
+    scores = scores.cpu().numpy()
+    df = pd.DataFrame(data = {'user': users, 'item':items, 'target':targets, 'score':scores})
+    Prec, Recall, MRR, MAP, NDCG = [], [], [], [], []
+    for u, group in df.groupby(['user']):
+        # for now poss before the negs, so we need shuffle first
+        shuffle_order = np.random.permutation(len(group))
+        group_shuffled = group.iloc[shuffle_order]
+        group_sorted = group_shuffled.sort_values(by=['score'], ascending=False)
+        '''NDCG...MAP...'''
+        preds = group_sorted['target'][:K]
+        rels = np.where(preds.values >= 4, 1.0, 0.0)
+        # print(rels.mean())
+        Prec.append(rels.sum() * 1.0 / len(preds))
+        if rels.sum() == 0:
+            Recall.append(0.0)
+        else:
+            Recall.append(rels.sum() * 1.0 / (group_sorted['target'].values>3).sum())
+        MRR.append(mrrs_(rels))
+        # MAP.append(average_precision_score(rels))
+        MAP.append(maps_(rels)) # MRR and MAP can only on rels not preds
+        
+        # NDCG.append(ndcg_score(np.array([group_sorted['target'].values[:10]]), np.array([group_sorted['score'].values[:10]]), k=10)) ### Wrong!!!
+        NDCG.append(ndcg_score(np.array([group_shuffled['target'].values]), np.array([group_shuffled['score'].values]), k=10))
+        # print(preds.values, rels)
+        # print(Prec[-1], Recall[-1], MRR[-1], MAP[-1], NDCG[-1])
+        # if len(Prec) == 20:
+        #     exit(0)
+    results = {}
+    results['Prec@%d'%K] = (np.array(Prec)).mean()
+    results['Recall@%d'%K] = (np.array(Recall)).mean()
+    results['MRR@%d'%K] = (np.array(MRR)).mean()
+    results['MAP@%d'%K] = (np.array(MAP)).mean()
+    results['NDCG@%d'%K] = (np.array(NDCG)).mean()
+    return results
+
+
 
 # preds: [0 1 0 1] the targets sorted by predicted scores
 
@@ -702,11 +742,11 @@ def mrrs_(preds):
     position = np.where(preds>0)[0][0] + 1
     return 1.0 / position
 
-def maps_(preds):
-    if preds.sum() == 0:
+def maps_(preds, k=10):
+    if preds[:k].sum() == 0:
         return 0.0
-    positions = np.where(preds>0)[0]
-    MAP = np.reciprocal(positions.astype(float)+1).sum() / len(preds)
+    positions = np.where(preds[:k]>0)[0]
+    MAP = (np.reciprocal(positions.astype(float)+1) * (np.arange(len(positions))+1)).sum() / preds.sum()
     return MAP
 
 # denominator
@@ -881,3 +921,88 @@ class OPPT_Evaluator(AbstractEvaluator):
         df = pd.DataFrame({'UserId': users, 'firsttime': np.array(firsttimes), 'lasttime': np.array(lasttimes)})
         df.to_csv(self.config['path'] + 'simulation' + '/user_presence.csv', sep=',', header=True, index=False)
         # exit(0)
+
+class TART_Evaluator(AbstractEvaluator):
+    def __init__(self, config, model, data):
+        super(TART_Evaluator, self).__init__(config, model, data)
+        self.n_items = self.data.n_items
+        self.n_users = self.data.n_users
+        self.n_periods = self.data.n_periods
+    
+    def _data_pre(self, train):
+        interaction = {}
+        interaction['user'] = torch.from_numpy(np.array(train['UserId'].values, dtype=int)).to(self.device)
+        interaction['item'] = torch.from_numpy(np.array(train['ItemId'].values, dtype=int)).to(self.device)
+        interaction['itemage'] = torch.from_numpy(np.array(train['itemage'].values, dtype=int)).to(self.device)
+        interaction['target'] = torch.from_numpy(train['rating'].values).to(self.device)
+        interaction['num'] = len(train)
+        return interaction
+
+    @torch.no_grad()
+    def _eval_epoch(self, interaction, batch_size=512):
+        users = interaction['user']
+        items = interaction['item']
+        itemages = interaction['itemage']
+        num = interaction['num']
+        scores = []
+        start_idx, end_idx = 0, batch_size
+        while start_idx < num:
+            score = self.model.predict({'user':users[start_idx:end_idx], \
+                'item':items[start_idx:end_idx], 'itemage':itemages[start_idx:end_idx]})
+            scores.append(score)
+            start_idx = end_idx
+            end_idx += batch_size
+        return torch.cat(scores, 0)
+
+    @torch.no_grad() 
+    def evaluate(self, ub='false', threshold=1e-3, baselines = None, subset = None):
+        interaction = self._data_pre(self.data.test)
+        if baselines is not None:
+            scores = self.baselines(interaction, variety=int(baselines[1]))
+        else:
+            scores = self._eval_epoch(interaction)
+        self._save_something(preds=scores.cpu().numpy())
+        self._save_something(preds=interaction['target'].cpu().numpy())
+        targets = interaction['target']
+        results = cal_ratpred_metrics(scores.cpu().numpy(), targets.cpu().numpy())
+        print('\t'.join(results.keys()), '\n', '\t'.join([str(x) for x in results.values()]))
+        # evaluate it as a ranking task
+        results = cal_rating2ranking_metrics(interaction, scores)
+        print('\t'.join(results.keys()), '\n', '\t'.join([str(x) for x in results.values()]))
+        return results
+
+    def baselines(self, interaction, variety=1):
+        '''some simple baseline variety
+        B2: all scores equal to a fixed value, avg-ratings over all.
+        B3: scores for (u, i) at T equal to a fixed value (diff at diff T), avg-ratings at T
+        '''
+        train = self.data.train
+        targets = interaction['target']
+        scores = torch.zeros_like(targets).float().to(self.device)
+        if variety == 2:
+            scores += train['rating'].mean()
+            print("****** Note we want to know what happened if we give all the predicted scores %.6f" % (scores[0].cpu()))
+        elif variety == 3:
+            scores_T = []
+            itemages = interaction['itemage']
+            for T in range(self.n_periods):
+                # # calculate in training set
+                # s_T = train[train['ItemAge'] == T]['rating'].mean()
+                # # calculate in test set
+                s_T = targets[itemages == T].cpu().numpy().mean()
+                scores[itemages == T] = s_T
+                scores_T.append(s_T)
+            print("****** Note we want to know what happened if we give all the predicted scores %s" % str(scores_T))
+        return scores
+
+    def _save_something(self, preds=None, target=None):
+        # # # look at the distributions on the preds per T
+        preds = np.round(preds).astype(int)
+        age = np.arange(self.n_periods)
+        avg_T = []
+        for T in age:
+            # print(self.test['ItemAge'] == T)
+            avg_T.append((preds[(self.data.test['itemage'] == T).values]).mean())
+        print(avg_T, preds.mean())
+        print(self.data.test['itemage'].unique())
+        # print("Value of s_T:", self.model.global_T.weight.squeeze().cpu())
