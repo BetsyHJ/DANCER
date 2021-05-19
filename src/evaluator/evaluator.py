@@ -491,7 +491,9 @@ class OP_Evaluator(AbstractEvaluator):
     @torch.no_grad() 
     def evaluate(self, ub='false', threshold=1e-3, baselines = None, subset = None):
         # self._save_pred_OP()
+        self._save_something2_()
         # self._save_pred_OP(alldata=True)
+        # exit(0)
 
         torch.manual_seed(517)
         np.random.seed(517)
@@ -555,6 +557,21 @@ class OP_Evaluator(AbstractEvaluator):
         # print(','.join([str(x) for x in p_T_test]))
         # print(','.join([str(int((itemages == i).sum())) for i in range(self.n_periods)]))
 
+    def _save_something2_(self):
+        # # Want to look at the distributions of P(O) on training set and testset respectly
+        data_ = [self.data.train_interactions, self.data.valid_interactions, self.data.test_interactions]
+        name_ = ['train', 'valid', 'test']
+        path = self.config['path'] + 'simulation' + '/predOP_%s_' + self.config['mode'] + '3.csv'
+        for i in range(len(name_)):
+            d = self._numpy2tensor(data_[i])
+            scores = self._eval_epoch(d).cpu().numpy()
+            results = cal_op_metrics(scores, d['target'].cpu().numpy())
+            print("Results on the %s data:" % name_[i], '\t'.join(results.keys()), '\n', '\t'.join([str(x) for x in results.values()]))
+            df = pd.DataFrame(data={'target':d['target'].cpu().numpy(), 'predOP':scores})
+            df.to_csv(path % name_[i], sep=',', index=False)
+        print("Check the distributions of predicted P(O) on train/valid/test sets.")
+        exit(0)
+
     def _save_pred_OP(self, alldata = False):
         if not alldata:
             # only on the observed ratings for RQ2
@@ -581,7 +598,7 @@ class OP_Evaluator(AbstractEvaluator):
             print("--------- Save the predicted Observation Probabilities of all observed (u,i,t), Nr. %d ----------" % interaction['num'])
             data = data[['UserId', 'ItemId', 'rating', 'timestamp', 'itemage', 'predOP']]
         else:
-            path = self.config['path'] + 'simulation' + '/predOP_' + self.config['mode'] + '.csv'
+            path = self.config['path'] + 'simulation' + '/predOP_' + self.config['mode'] + '2.csv'
             print("--------- Save the predicted Observation Probabilities of all possible (u,i,t), Nr. %d ----------" % interaction['num'])
             data = data[['UserId', 'ItemId', 'itemage', 'predOP']]
         data.to_csv(path, sep=',', header=True, index=False)
@@ -821,7 +838,7 @@ class OPPT_Evaluator(AbstractEvaluator):
 
     @torch.no_grad() 
     def evaluate(self, ub='false', threshold=1e-3, baselines = None, subset = None):
-        # self._save_pred_ratings()
+        self._save_pred_ratings()
 
         interaction = self._data_pre()
         if baselines is not None:
@@ -920,7 +937,7 @@ class OPPT_Evaluator(AbstractEvaluator):
             lasttimes.append(max(group['timestamp']))
         df = pd.DataFrame({'UserId': users, 'firsttime': np.array(firsttimes), 'lasttime': np.array(lasttimes)})
         df.to_csv(self.config['path'] + 'simulation' + '/user_presence.csv', sep=',', header=True, index=False)
-        # exit(0)
+        exit(0)
 
 class TART_Evaluator(AbstractEvaluator):
     def __init__(self, config, model, data):
@@ -987,9 +1004,9 @@ class TART_Evaluator(AbstractEvaluator):
             itemages = interaction['itemage']
             for T in range(self.n_periods):
                 # # calculate in training set
-                # s_T = train[train['ItemAge'] == T]['rating'].mean()
+                s_T = train[train['itemage'] == T]['rating'].mean()
                 # # calculate in test set
-                s_T = targets[itemages == T].cpu().numpy().mean()
+                # s_T = targets[itemages == T].cpu().numpy().mean()
                 scores[itemages == T] = s_T
                 scores_T.append(s_T)
             print("****** Note we want to know what happened if we give all the predicted scores %s" % str(scores_T))

@@ -1126,6 +1126,8 @@ class TART_Trainer(AbstractTrainer):
         num = interaction['num']
         if 'ips' in self.debiasing:
             inv_predOP = torch.reciprocal(interaction['predOP'])
+            # print("!!!! Using SNIPS !!!!")
+            # inv_predOP = inv_predOP / inv_predOP.mean()
         # train on batch
         total_loss = 0
         start_idx = 0
@@ -1187,6 +1189,8 @@ class TART_Trainer(AbstractTrainer):
         itemage = interaction['itemage']
         if 'ips' in self.debiasing:
             inv_predOP = torch.reciprocal(interaction['predOP'])
+            # # print("!!!! Using SNIPS !!!!")
+            # inv_predOP = inv_predOP / inv_predOP.mean()
         num = interaction['num']
 
         start_idx = 0

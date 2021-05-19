@@ -9,8 +9,8 @@ class Dataset(object):
         dataset = config['data.input.dataset']
         self.path = path
         self.dataset = dataset
-        assert (task.upper() != 'TART') or (dataset == 'simulation') # make sure when the task is TART, we use simulated dataset
-        assert (task.upper() == 'TART') or (dataset != 'simulation') # make sure simulated dataset be used only when task is TART
+        assert (task.upper() != 'TART') or (dataset in ['simulation', 'fully-synthetic']) # make sure when the task is TART, we use simulated dataset
+        assert (task.upper() == 'TART') or (dataset not in ['simulation', 'fully-synthetic']) # make sure simulated dataset be used only when task is TART
 
         # # load data
         if task.upper() == 'TART':
@@ -23,16 +23,19 @@ class Dataset(object):
             self.n_items = max(self.train['ItemId']) + 1 #max(max(self.train['ItemId']), max(self.valid['ItemId']))
             self.n_periods = max(max(self.train['itemage']), max(self.valid['itemage']), max(self.test['itemage'])) + 1
             # map the itemage into the bins:
-            self.train['itemage'], _ = self.years2bins(self.train['itemage'])
-            self.valid['itemage'], _ = self.years2bins(self.valid['itemage'])
-            self.test['itemage'], n_bins = self.years2bins(self.test['itemage'])
-            self.n_periods = n_bins
+            if dataset == 'simulation':
+                self.train['itemage'], _ = self.years2bins(self.train['itemage'])
+                self.valid['itemage'], _ = self.years2bins(self.valid['itemage'])
+                self.test['itemage'], n_bins = self.years2bins(self.test['itemage'])
+                self.n_periods = n_bins
             # print(self.train['itemage'].values[800:850])
             # del items in test but not in train
             n_test = len(self.test)
             self.test = self.test[self.test['ItemId'].isin(self.train['ItemId'].unique())]
             print("Simulated test: %d interactions whose items do not appear in the training set. And thus Nr. testset is %d." % (n_test - len(self.test), len(self.test)))
             print("(#users : %d, #items : %d, period_type : %s, n_periods : %d)" % (self.n_users, self.n_items, config['data.itemage.type'].lower(), self.n_periods))
+            # # use estimated propensities / predOP
+            # self.estimated_predOP_replace(mode='b4', static=False)
             return
 
         self.train_full = self._load_ratings(path + dataset + '/train.csv')
@@ -177,6 +180,37 @@ class Dataset(object):
                 # exit(0)
                 return itemage_
         return itemage
+
+    def estimated_predOP_replace(self, mode='b3', static=False):
+        df = pd.concat([self.train, self.valid])
+        scores_train, scores_valid = np.zeros(len(self.train), dtype=float), np.zeros(len(self.valid), dtype=float)
+        if mode == 'b3': # popularity at item-age t
+            assert static == False
+            for T in range(self.n_periods):
+                s_T = (df['itemage'] == T).mean()
+                scores_train[self.train['itemage'].values == T] = s_T
+                scores_valid[self.valid['itemage'].values == T] = s_T
+            # print("MSE of %s: %.4f" % (mode, ((self.train['predOP'] - scores_train) ** 2).mean()))
+            self.train['predOP'], self.valid['predOP'] = scores_train, scores_valid
+            print("!!!!! Estimate and Replace the propensities with B3. Done !!!!!")
+        if mode == 'b4': # popularity of item i at item-age t
+            assert static == False
+            for T in range(self.n_periods):
+                for i in range(self.n_items):
+                    s_iT = ((df['itemage'] == T) & (df['ItemId'] == i)).mean()
+                    scores_train[(self.train['itemage'].values == T) & (self.train['ItemId'].values == i)] = s_iT
+                    scores_valid[(self.valid['itemage'].values == T) & (self.valid['ItemId'].values == i)] = s_iT
+            norm = 1.0 / scores_train.mean() * self.train['predOP'].values.mean()
+            scores_train *= norm
+            scores_valid *= norm
+            # print((self.train['predOP'].values ** 2).mean(), ((scores_train) ** 2).mean())
+            # print("MSE of %s: %.4f" % (mode, ((self.train['predOP'] - scores_train) ** 2).mean()))
+            self.train['predOP'], self.valid['predOP'] = scores_train, scores_valid
+            print("!!!!! Estimate and Replace the propensities with B4. Done !!!!!")
+        else:
+            print("Unknown estimated predOP")
+            exit(1)
+            
 
     def merge_predOP(self, train):
         if self.dataset == 'ml-latest-small':
