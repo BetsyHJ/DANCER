@@ -27,7 +27,14 @@ class TMF(nn.Module):
         # define layers and loss
         self.user_embedding = nn.Embedding(self.n_users, self.embedding_size)
         self.item_embedding = nn.Embedding(self.n_items, self.embedding_size)
-        self.item_Dyn_embedding = nn.Embedding(self.n_items * self.n_periods, self.embedding_size)
+        # self.item_Dyn_embedding = nn.Embedding(self.n_items * self.n_periods, self.embedding_size)
+        self.user_Dyn_embedding = nn.Embedding(self.n_users * self.n_periods, self.embedding_size)
+
+        self.b_u = nn.Embedding(self.n_users, 1)
+        self.b_i = nn.Embedding(self.n_items, 1)
+        self.b = Parameter(torch.Tensor(1))
+        self.global_T = nn.Embedding(self.n_periods, 1)
+
         # self.item_Dyn_embedding = [] # [T N D]
         # for t in range(self.n_periods):
         #     self.item_Dyn_embedding.append(nn.Embedding(self.n_items, self.embedding_size))
@@ -55,6 +62,15 @@ class TMF(nn.Module):
 
         # parameters initialization
         self.apply(self._init_weights)
+        self.log_info()
+
+    def log_info(self):
+        # print("********* Using TMF: v_u * v_i_t + b + b_i + b_u + b_T **********")
+        print("********* Using TMF: v_u(t) * v_i + b + b_i + b_u + b_T **********")
+        # print("********* Using TMF: v_u(t) * v_i + b_T **********")
+
+        # print("********* Using TMF: v_u(t) * (v_i + v_T) + b_T **********")
+        # self.time_embedding = nn.Embedding(self.n_periods, self.embedding_size)
 
     def _init_weights(self, module):
         if isinstance(module, nn.Embedding):
@@ -76,12 +92,22 @@ class TMF(nn.Module):
 
     def get_item_embedding(self, item, itemage): # [B], [B]
         idx = item * self.n_periods + itemage
-        return self.item_embedding(item) + self.item_Dyn_embedding(idx)
+        return self.item_Dyn_embedding(idx)
+        # return self.item_embedding(item) + self.item_Dyn_embedding(idx)
+    def get_user_embedding(self, user, itemage): # [B], [B]
+        idx = user * self.n_periods + itemage
+        return self.user_Dyn_embedding(idx)
 
     def forward(self, user, item, itemage):
-        user_e = self.user_embedding(user)
-        item_e = self.get_item_embedding(item, itemage)
+        user_e = self.get_user_embedding(user, itemage) # self.user_embedding(user)
+        item_e = self.item_embedding(item) # self.get_item_embedding(item, itemage)
+        # # v_u(t) * v_i + b_T
         output = torch.mul(user_e, item_e).sum(-1).float() # [B, D] -> [B]
+        # # v_u(t) * (v_i + v_T) + b_T
+        # time_e = self.time_embedding(itemage)
+        # output = torch.mul(user_e, item_e + time_e).sum(-1).float() # [B, D] -> [B]
+
+        output += self.global_T(itemage).squeeze() + self.b + self.b_u(user).squeeze() + self.b_i(item).squeeze()
         if self.m is None:
             return output
         return self.m(output)
@@ -122,15 +148,20 @@ class TMF_variety(TMF):
     def __init__(self, config, data, debiasing=False, output_dim=2):
         super(TMF_variety, self).__init__(config, data, debiasing=False, output_dim=2)
         self.item_Dyn_embedding = None
-        print("********* Using TMF-variety: (v_u * v_i) + b + b_i + b_u + b_T **********")
-        # print("********* Using TMF-variety: (v_u * v_i) + b + b_i + b_u **********")
-        # print("********* Using TMF-variety: (v_u * v_i) + b_T **********")
+        self.time_embedding = None
+        self.item_embedding = nn.Embedding(self.n_items, self.embedding_size)
         self.b_u = nn.Embedding(self.n_users, 1)
         self.b_i = nn.Embedding(self.n_items, 1)
         self.b = Parameter(torch.Tensor(1))
         self.global_T = nn.Embedding(self.n_periods, 1)
         self.apply(self._init_weights)
+    
+    def log_info(self):
+        print("********* Using TMF-variety: (v_u * v_i) + b + b_i + b_u + b_T **********")
+        # print("********* Using TMF-variety: (v_u * v_i) + b + b_i + b_u **********")
+        # print("********* Using TMF-variety: (v_u * v_i) + b_T **********")
         
+
     def forward(self, user, item, itemage):
         user_e = self.user_embedding(user)
         item_e = self.item_embedding(item)

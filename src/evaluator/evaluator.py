@@ -292,16 +292,19 @@ class OP_Evaluator(AbstractEvaluator):
         self.n_items = self.data.n_items
         self.n_users = self.data.n_users
         self.n_periods = self.data.n_periods
-        self.item_birthdate = torch.from_numpy(self.data._get_item_birthdate()).to(self.device)
+
+        # self.item_birthdate = torch.from_numpy(self.data._get_item_birthdate()).to(self.device)
+        if self.splitting != 'random':
+            self.item_birthdate = torch.from_numpy(self.data._get_item_birthdate()).to(self.device)
         
-        # get last timestamp of user in the system from the training set, and evaluate on the next one-month
-        self.user_lasttime_train = self._get_trainU_last()
-        self.test_user_pos = {} # filled when we call _data_pre_next_month()
-        self.period_type = self.data.period_type
-        if self.period_type == 'month':
-            self.period_s = 30 * 24 * 60 * 60
-        elif self.period_type == 'year':
-            self.period_s = 365 * 24 * 60 * 60
+            # get last timestamp of user in the system from the training set, and evaluate on the next one-month
+            self.user_lasttime_train = self._get_trainU_last()
+            self.test_user_pos = {} # filled when we call _data_pre_next_month()
+            self.period_type = self.data.period_type
+            if self.period_type == 'month':
+                self.period_s = 30 * 24 * 60 * 60
+            elif self.period_type == 'year':
+                self.period_s = 365 * 24 * 60 * 60
         # torch.manual_seed(517)
         # np.random.seed(517)
 
@@ -490,9 +493,9 @@ class OP_Evaluator(AbstractEvaluator):
         
     @torch.no_grad() 
     def evaluate(self, ub='false', threshold=1e-3, baselines = None, subset = None):
-        # self._save_pred_OP()
-        self._save_something2_()
-        # self._save_pred_OP(alldata=True)
+        # # self._save_pred_OP()
+        # self._save_something2_()
+        # self._save_pred_OP(alldata=True) # target=1
         # exit(0)
 
         torch.manual_seed(517)
@@ -572,7 +575,7 @@ class OP_Evaluator(AbstractEvaluator):
         print("Check the distributions of predicted P(O) on train/valid/test sets.")
         exit(0)
 
-    def _save_pred_OP(self, alldata = False):
+    def _save_pred_OP(self, alldata = False, target=None):
         if not alldata:
             # only on the observed ratings for RQ2
             data = pd.concat([self.data.train_full, self.data.test], ignore_index=True)
@@ -582,7 +585,7 @@ class OP_Evaluator(AbstractEvaluator):
             interaction = self._merge_interactions(self._numpy2tensor(self.data.train_interactions), self._numpy2tensor(self.data.valid_interactions))
             interaction = self._merge_interactions(interaction, self._numpy2tensor(self.data.test_interactions))
             print("The total number of interactions is %d = %d + %d + %d" % (interaction['num'], self.data.train_interactions['num'], self.data.valid_interactions['num'], self.data.test_interactions['num']))
-            data = pd.DataFrame({'UserId': interaction['user'].cpu().numpy(), 'ItemId': interaction['item'].cpu().numpy(), 'itemage': interaction['itemage'].cpu().numpy()})
+            data = pd.DataFrame({'UserId': interaction['user'].cpu().numpy(), 'ItemId': interaction['item'].cpu().numpy(), 'itemage': interaction['itemage'].cpu().numpy(), 'target': interaction['target'].cpu().numpy()})
         else:
             raise NotImplementedError("Generate P(O) on all possible (u, i, t) during user presence only on randomly setting")
 
@@ -594,17 +597,19 @@ class OP_Evaluator(AbstractEvaluator):
         if 'ItemAge' not in data:
             data['itemage'] = interaction['itemage'].cpu().numpy()
         if not alldata:
-            path = self.config['path'] + self.config['dataset'] + '/predOP_' + self.config['mode'] + '.csv'
+            path = self.config['path'] + self.config['dataset'] + '/predOP_' + self.config['mode'] + '_rename.csv'
             print("--------- Save the predicted Observation Probabilities of all observed (u,i,t), Nr. %d ----------" % interaction['num'])
             data = data[['UserId', 'ItemId', 'rating', 'timestamp', 'itemage', 'predOP']]
         else:
-            path = self.config['path'] + 'simulation' + '/predOP_' + self.config['mode'] + '2.csv'
-            print("--------- Save the predicted Observation Probabilities of all possible (u,i,t), Nr. %d ----------" % interaction['num'])
+            path = self.config['path'] + self.config['dataset'] + '/predOP_' + self.config['mode'] + '_rename.csv'# + '_small_0.1.csv'
+            if target is not None:
+                data = data[data['target'] == target]
             data = data[['UserId', 'ItemId', 'itemage', 'predOP']]
+            print("--------- Save the predicted Observation Probabilities of all possible (u,i,t), Nr. %d ----------" % len(data))
         data.to_csv(path, sep=',', header=True, index=False)
         results = cal_op_metrics(scores, interaction['target'].cpu().numpy())
         print("Results on the whole data:", '\t'.join(results.keys()), '\n', '\t'.join([str(x) for x in results.values()]))
-        # exit(0)
+        exit(0)
 
     
     def baselines(self, interaction, variety=1, subset = None): # we should use the training set rather than test set.
@@ -838,7 +843,7 @@ class OPPT_Evaluator(AbstractEvaluator):
 
     @torch.no_grad() 
     def evaluate(self, ub='false', threshold=1e-3, baselines = None, subset = None):
-        self._save_pred_ratings()
+        # self._save_pred_ratings()
 
         interaction = self._data_pre()
         if baselines is not None:
@@ -902,6 +907,7 @@ class OPPT_Evaluator(AbstractEvaluator):
     def _save_pred_ratings(self):
         assert self.debiasing
         path = self.config['path'] + 'simulation' + '/predOP_tmtf.csv'
+        # path = self.config['path'] + 'simulation' + '/predOP_tmtf_small_0.1.csv'
         data = pd.read_csv(path, sep=',', header=0)
         interaction = {}
         interaction['num'] = len(data)
@@ -926,17 +932,17 @@ class OPPT_Evaluator(AbstractEvaluator):
         data['rating'] = scores
         
         data = data[['UserId','ItemId','itemage', 'rating', 'predOP']]
-        data.to_csv(self.config['path'] + 'simulation' + '/pred_ratings_' + self.config['mode'] + '.csv', sep=',', header=True, index=False)
+        data.to_csv(self.config['path'] + 'simulation' + '/pred_ratings_' + self.config['mode'] + '_rename.csv', sep=',', header=True, index=False)
         print(data[:10])
-        # also save presence of users: UserId, firsttime, lasttime
-        observed_data = pd.concat([self.data.train, self.data.valid, self.data.test], axis=0, ignore_index=True)
-        users, firsttimes, lasttimes = [], [], []
-        for u, group in observed_data.groupby(by=['UserId']):
-            users.append(u)
-            firsttimes.append(min(group['timestamp']))
-            lasttimes.append(max(group['timestamp']))
-        df = pd.DataFrame({'UserId': users, 'firsttime': np.array(firsttimes), 'lasttime': np.array(lasttimes)})
-        df.to_csv(self.config['path'] + 'simulation' + '/user_presence.csv', sep=',', header=True, index=False)
+        # # also save presence of users: UserId, firsttime, lasttime
+        # observed_data = pd.concat([self.data.train, self.data.valid, self.data.test], axis=0, ignore_index=True)
+        # users, firsttimes, lasttimes = [], [], []
+        # for u, group in observed_data.groupby(by=['UserId']):
+        #     users.append(u)
+        #     firsttimes.append(min(group['timestamp']))
+        #     lasttimes.append(max(group['timestamp']))
+        # df = pd.DataFrame({'UserId': users, 'firsttime': np.array(firsttimes), 'lasttime': np.array(lasttimes)})
+        # df.to_csv(self.config['path'] + 'simulation' + '/user_presence.csv', sep=',', header=True, index=False)
         exit(0)
 
 class TART_Evaluator(AbstractEvaluator):
@@ -980,6 +986,7 @@ class TART_Evaluator(AbstractEvaluator):
             scores = self._eval_epoch(interaction)
         self._save_something(preds=scores.cpu().numpy())
         self._save_something(preds=interaction['target'].cpu().numpy())
+        self._save_pred_ratings(scores.cpu().numpy())
         targets = interaction['target']
         results = cal_ratpred_metrics(scores.cpu().numpy(), targets.cpu().numpy())
         print('\t'.join(results.keys()), '\n', '\t'.join([str(x) for x in results.values()]))
@@ -1014,7 +1021,7 @@ class TART_Evaluator(AbstractEvaluator):
 
     def _save_something(self, preds=None, target=None):
         # # # look at the distributions on the preds per T
-        preds = np.round(preds).astype(int)
+        preds = np.round(preds * 2).astype(int) * 0.5
         age = np.arange(self.n_periods)
         avg_T = []
         for T in age:
@@ -1023,3 +1030,12 @@ class TART_Evaluator(AbstractEvaluator):
         print(avg_T, preds.mean())
         print(self.data.test['itemage'].unique())
         # print("Value of s_T:", self.model.global_T.weight.squeeze().cpu())
+
+    def _save_pred_ratings(self, preds):
+        '''save the predicted ratings'''
+        data = self.data.test.copy()
+        data['itemage'] = data['itemage_copy'].values
+        assert len(data) == len(preds)
+        data['rating'] = preds
+        data = data[['UserId','ItemId','itemage', 'rating']]
+        data.to_csv(self.data.path + self.data.dataset + '/TART_pred_ratings_' + self.config['mode'] + '_rename.csv', sep=',', header=True, index=False)

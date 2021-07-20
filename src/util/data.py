@@ -9,8 +9,8 @@ class Dataset(object):
         dataset = config['data.input.dataset']
         self.path = path
         self.dataset = dataset
-        assert (task.upper() != 'TART') or (dataset in ['simulation', 'fully-synthetic']) # make sure when the task is TART, we use simulated dataset
-        assert (task.upper() == 'TART') or (dataset not in ['simulation', 'fully-synthetic']) # make sure simulated dataset be used only when task is TART
+        assert (task.upper() != 'TART') or (dataset in ['simulation', 'simulation2', 'simulation3','fully-synthetic']) # make sure when the task is TART, we use simulated dataset
+        assert (task.upper() == 'TART') or (dataset not in ['simulation', 'simulation2', 'simulation3','fully-synthetic']) # make sure simulated dataset be used only when task is TART
 
         # # load data
         if task.upper() == 'TART':
@@ -19,11 +19,20 @@ class Dataset(object):
             self.valid = self._load_ratings(path + dataset + '/valid.csv')
             # test columns: [UserId,ItemId,rating,itemage]
             self.test = self._load_ratings(path + dataset + '/test.csv')
+            self.test['itemage_copy'] = np.copy(self.test['itemage'].values) # for getting the original itemage
             self.n_users = max(self.train['UserId']) + 1 #max(max(self.train['UserId']), max(self.valid['UserId']))
             self.n_items = max(self.train['ItemId']) + 1 #max(max(self.train['ItemId']), max(self.valid['ItemId']))
             self.n_periods = max(max(self.train['itemage']), max(self.valid['itemage']), max(self.test['itemage'])) + 1
+
+            ''' use estimated propensities / predOP '''
+            # self.estimated_predOP_replace(mode='b2_i', static=False)
+            # self.estimated_predOP_replace(mode='b3', static=False)
+            # self.estimated_predOP_replace(mode='b4', static=False)
+            # self.estimated_predOP_replace(mode='mf', static=False)
+            # self.estimated_predOP_replace(mode='tmtf', static=False)
+    
             # map the itemage into the bins:
-            if dataset == 'simulation':
+            if 'simulation' in dataset:
                 self.train['itemage'], _ = self.years2bins(self.train['itemage'])
                 self.valid['itemage'], _ = self.years2bins(self.valid['itemage'])
                 self.test['itemage'], n_bins = self.years2bins(self.test['itemage'])
@@ -34,12 +43,33 @@ class Dataset(object):
             self.test = self.test[self.test['ItemId'].isin(self.train['ItemId'].unique())]
             print("Simulated test: %d interactions whose items do not appear in the training set. And thus Nr. testset is %d." % (n_test - len(self.test), len(self.test)))
             print("(#users : %d, #items : %d, period_type : %s, n_periods : %d)" % (self.n_users, self.n_items, config['data.itemage.type'].lower(), self.n_periods))
-            # # use estimated propensities / predOP
-            # self.estimated_predOP_replace(mode='b4', static=False)
+            return
+
+        self.task = task
+        # set the period info
+        self.period_type = config['data.itemage.type'].lower()
+        if 'data.itemage.max' in config:
+            self.n_periods = int(config['data.itemage.max'])
+        if self.period_type == 'year':
+            if 'data.itemage.max' not in config:
+                self.n_periods = 20
+        elif self.period_type == 'month':
+            if 'data.itemage.max' not in config:
+                self.n_periods = 36
+
+        # self.train_full = self._load_ratings(path + dataset + '/train.csv')
+        # self.test = self._load_ratings(path + dataset + '/test.csv')
+
+        # OIPT, do random splitting
+        if (task == 'OIPT') and (config['splitting'] == 'random'):
+            self.resplitting_random_OIPT()
+            # self.resplitting_random_OIPT3(ratio=0.1)
+            print("(#users : %d, #items : %d, period_type : %s, n_periods : %d)" % (self.n_users, self.n_items, self.period_type, self.n_periods))
             return
 
         self.train_full = self._load_ratings(path + dataset + '/train.csv')
         self.test = self._load_ratings(path + dataset + '/test.csv')
+
         # self._get_item_birthdate() # put it here to generate ./data/simulation/item_birthdate.csv
         # # for task OPPT, we do randomly training-test splitting
         if task == 'OPPT':
@@ -51,24 +81,6 @@ class Dataset(object):
             self.valid = self.merge_predOP(self.valid)
             self.test = self.merge_predOP(self.test)
             print("Load predOP (P(O)) done.")
-        self.task = task
-
-        # set the period info
-        self.period_type = config['data.itemage.type'].lower()
-        if 'data.itemage.max' in config:
-            self.n_periods = int(config['data.itemage.max'])
-        if self.period_type == 'year':
-            if 'data.itemage.max' not in config:
-                self.n_periods = 20
-        elif self.period_type == 'month':
-            if 'data.itemage.max' not in config:
-                self.n_periods = 36
-        
-        # OIPT, do random splitting
-        if (task == 'OIPT') and (config['splitting'] == 'random'):
-            self.resplitting_random_OIPT()
-            print("(#users : %d, #items : %d, period_type : %s, n_periods : %d)" % (self.n_users, self.n_items, self.period_type, self.n_periods))
-            return
 
         self.n_items = max(self.train_full['ItemId']) + 1
         self.n_users = max(self.train_full['UserId']) + 1
@@ -182,7 +194,7 @@ class Dataset(object):
         return itemage
 
     def estimated_predOP_replace(self, mode='b3', static=False):
-        df = pd.concat([self.train, self.valid])
+        df = pd.concat([self.train, self.valid], ignore_index=True)
         scores_train, scores_valid = np.zeros(len(self.train), dtype=float), np.zeros(len(self.valid), dtype=float)
         if mode == 'b3': # popularity at item-age t
             assert static == False
@@ -193,20 +205,60 @@ class Dataset(object):
             # print("MSE of %s: %.4f" % (mode, ((self.train['predOP'] - scores_train) ** 2).mean()))
             self.train['predOP'], self.valid['predOP'] = scores_train, scores_valid
             print("!!!!! Estimate and Replace the propensities with B3. Done !!!!!")
-        if mode == 'b4': # popularity of item i at item-age t
+        elif mode == 'b2_i': # P(O|i)
+            assert static == False
+            for i in range(self.n_items):
+                s_i = (df['ItemId'] == i).mean()
+                scores_train[(self.train['ItemId'].values == i)] = s_i
+                scores_valid[(self.valid['ItemId'].values == i)] = s_i
+            self.train['predOP'], self.valid['predOP'] = scores_train, scores_valid
+            print("!!!!! Estimate and Replace the propensities with pop_i. Done !!!!!")
+        elif mode == 'b4': # popularity of item i at item-age t
             assert static == False
             for T in range(self.n_periods):
                 for i in range(self.n_items):
                     s_iT = ((df['itemage'] == T) & (df['ItemId'] == i)).mean()
                     scores_train[(self.train['itemage'].values == T) & (self.train['ItemId'].values == i)] = s_iT
                     scores_valid[(self.valid['itemage'].values == T) & (self.valid['ItemId'].values == i)] = s_iT
-            norm = 1.0 / scores_train.mean() * self.train['predOP'].values.mean()
-            scores_train *= norm
-            scores_valid *= norm
+            # norm = 1.0 / scores_train.mean() * self.train['predOP'].values.mean()
+            # scores_train *= norm
+            # scores_valid *= norm
             # print((self.train['predOP'].values ** 2).mean(), ((scores_train) ** 2).mean())
             # print("MSE of %s: %.4f" % (mode, ((self.train['predOP'] - scores_train) ** 2).mean()))
             self.train['predOP'], self.valid['predOP'] = scores_train, scores_valid
-            print("!!!!! Estimate and Replace the propensities with B4. Done !!!!!")
+            print("!!!!! Estimate and Replace the propensities with B4 (pop_it). Done !!!!!")
+        elif (mode == 'mf') or (mode == 'tmtf'):
+            path = self.path + "/sim-estimOP/predOP_%s_small_0.1.csv"
+            predOP = pd.read_csv(path % mode, sep=',', header=0)
+            if mode == 'mf':
+                predOP_numpy = np.zeros((self.n_users, self.n_items), dtype=float)
+                predOP_numpy[predOP['UserId'].values, predOP['ItemId'].values] = predOP['predOP'].values
+                self.train['predOP'] = predOP_numpy[self.train['UserId'].values, self.train['ItemId'].values]
+                self.valid['predOP'] = predOP_numpy[self.valid['UserId'].values, self.valid['ItemId'].values]
+                # print(self.train[self.train['predOP'] == 0.0][:20])
+                # exit(0)
+            else:
+                num_train = len(self.train)
+                df = df.sort_values(by=['UserId', 'ItemId', 'itemage'])
+                predOP = predOP.sort_values(by=['UserId', 'ItemId', 'itemage'])
+                assert ((df['UserId'].values != predOP['UserId'].values).sum() == 0)
+                assert ((df['ItemId'].values != predOP['ItemId'].values).sum() == 0)
+                # print(df[df['ItemId'].values != predOP['ItemId'].values])
+                # print(predOP[df['ItemId'].values != predOP['ItemId'].values])
+                assert ((df['itemage'].values != predOP['itemage'].values).sum() == 0)
+                df['predOP'] = predOP['predOP'].values
+                # print(df[:10], predOP[:10])
+                df = df.sort_index()
+                train_ = df[:num_train]
+                assert (train_['UserId'] != self.train['UserId']).sum() == 0
+                assert (train_['ItemId'] != self.train['ItemId']).sum() == 0
+                assert (train_['itemage'] != self.train['itemage']).sum() == 0
+                self.train['predOP'] = train_['predOP'].values
+                self.valid['predOP'] = df[num_train:]['predOP'].values
+                # print(self.train[:10])
+                # print(train_[:10])
+            print("!!!!! Estimate and Replace the propensities with %s. Done !!!!!" % mode)
+            # exit(0)
         else:
             print("Unknown estimated predOP")
             exit(1)
@@ -214,6 +266,7 @@ class Dataset(object):
 
     def merge_predOP(self, train):
         if self.dataset == 'ml-latest-small':
+            # filename = self.path + self.dataset + '/predOP_tmtf_small_0.1.csv'
             filename = self.path + self.dataset + '/predOP_tmtf.csv'
         elif self.dataset == 'ml-100k':
             filename = self.path + self.dataset + '/predOP_mf.csv'
@@ -399,6 +452,53 @@ class Dataset(object):
         self.item_birthdate = self._get_item_birthdate()
         self.train_interactions, self.valid_interactions, self.test_interactions = self._neg_sampling_time_based(ratings)
         print("Generate the random-splitted training/test set after negative generation. Done.")
+        
+    def resplitting_random_OIPT3(self, ratio=0.1):
+        midname = '4mf' # or ''
+        if self.task.upper() != 'OIPT':
+            raise NotImplementedError("Make sure task as OIPT when calling resplitting_random_OIPT")
+        print("!!!!!!! We only use %f data for train and %f for validation, and the rest for test for better generation for TART !!!!!!!!" % (ratio, ratio))
+        if os.path.exists(self.path + self.dataset + '/valid_random_OIPT%s_task3.csv' % midname):
+            train = self._load_ratings(self.path + self.dataset + '/train_random_OIPT%s_task3.csv' % midname)
+            self.train_interactions = self._df2interactions(train)
+            valid = self._load_ratings(self.path + self.dataset + '/valid_random_OIPT%s_task3.csv' % midname)
+            self.valid_interactions = self._df2interactions(valid)
+            test = self._load_ratings(self.path + self.dataset + '/test_random_OIPT%s_task3.csv' % midname)
+            self.test_interactions = self._df2interactions(test)
+            # cols = ['user', 'item', 'itemage', 'target'] which are generated by negative sampling. Not timestamp, because for negs, we do not have their timestamps
+            self.n_users = max(max(train['user']), max(valid['user']), max(test['user'])) + 1
+            self.n_items = max(max(train['item']), max(valid['item']), max(test['item'])) + 1
+            self.n_periods = max(max(train['itemage']), max(valid['itemage']), max(test['itemage'])) + 1
+            self.max_period = self.n_periods - 1
+            print("Columns of data are, ", train.columns)
+            print("Loading randomly-splitted training and test set. Done.")
+            return 
+
+        # load as interactions
+        if os.path.exists(self.path + self.dataset + '/valid_random_OIPT.csv'):
+            train = self._load_ratings(self.path + self.dataset + '/train_random_OIPT.csv')
+            valid = self._load_ratings(self.path + self.dataset + '/valid_random_OIPT.csv')
+            test = self._load_ratings(self.path + self.dataset + '/test_random_OIPT.csv')
+            # cols = ['user', 'item', 'itemage', 'target'] which are generated by negative sampling. Not timestamp, because for negs, we do not have their timestamps
+            self.n_users = max(max(train['user']), max(valid['user']), max(test['user'])) + 1
+            self.n_items = max(max(train['item']), max(valid['item']), max(test['item'])) + 1
+            self.n_periods = max(max(train['itemage']), max(valid['itemage']), max(test['itemage'])) + 1
+            self.max_period = self.n_periods - 1
+            df = pd.concat([train, valid, test], axis=0)
+            assert len(df) == (len(train) + len(valid) + len(test))
+            np.random.seed(517)
+            indice = np.random.uniform(size=(len(df)))
+            indice_train = (indice <= 0.1)
+            indice_valid = (indice > 0.9)
+            indice_test = ((indice > 0.1) & (indice <= 0.9))
+            self.train_interactions = self._df2interactions(df[indice_train])
+            self.valid_interactions = self._df2interactions(df[indice_valid])
+            self.test_interactions = self._df2interactions(df[indice_test])
+            df[indice_train].to_csv(self.path + self.dataset + '/train_random_OIPT_task3.csv', index=False)
+            df[indice_valid].to_csv(self.path + self.dataset + '/valid_random_OIPT_task3.csv', index=False)
+            df[indice_test].to_csv(self.path + self.dataset + '/test_random_OIPT_task3.csv', index=False)
+        else:
+            raise "Errors"
         
         
     def _neg_sampling_time_based(self, ratings):
