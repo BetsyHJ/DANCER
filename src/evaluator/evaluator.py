@@ -671,15 +671,37 @@ class OP_Evaluator(AbstractEvaluator):
                 scores_T.append(s_T)
             print("****** Note we want to know what happened if we give all the predicted scores %s" % str(scores_T))
         elif variety == 4:
-            itemages = interaction['itemage']
+            # itemages = interaction['itemage']
+            # items = interaction['item']
+            # num_D = self.n_users * self.n_items
+            # s_iT = train.groupby(['ItemId', 'ItemAge']).size() * 1. / num_D
+            # # norm = 0.012 / s_iT.mean()
+            # print("We do normalization: %f" % norm)
+            # s_iT *= norm
+            # for i, T in s_iT.index:
+            #     scores[(items == i) & (itemages == T)] = s_iT[i, T]
+            
             items = interaction['item']
-            num_D = self.n_users * self.n_items
-            s_iT = train.groupby(['ItemId', 'ItemAge']).size() * 1. / num_D
-            norm = 0.012 / s_iT.mean()
-            print("We do normalization: %f" % norm)
-            s_iT *= norm
-            for i, T in s_iT.index:
-                scores[(items == i) & (itemages == T)] = s_iT[i, T]
+            itemages = interaction['itemage']
+            train_i = train['item']
+            train_ia = train['itemage']
+            train_target = train['target']
+            for i in range(self.data.n_items):
+                if len(train_target[train_i == i]) > 0:
+                    scores[items == i] = train_target[train_i == i].mean()
+            for i in range(self.data.n_items):
+                for ia in range(self.data.n_periods):
+                    v = train_target[(train_i == i) & (train_ia == ia)]
+                    if len(v) > 0:
+                        scores[(items == i) & (itemages == ia)] = v.mean()
+
+        elif variety == 5: # pop_i
+            items = interaction['item']
+            train_i = train['item']
+            train_target = train['target']
+            for i in range(self.data.n_items):
+                if len(train_target[train_i == i]) > 0:
+                    scores[items == i] = train_target[train_i == i].mean()
         return scores, w_sigmoid, interaction
 
     # def metrics_info(self, results):
@@ -853,8 +875,10 @@ class OPPT_Evaluator(AbstractEvaluator):
         targets = interaction['target']
         predOP = None
         if self.debiasing:
-            predOP = np.reciprocal(interaction['predOP'].cpu().numpy()) # IPS weighting
+            predOP = interaction['predOP'].cpu().numpy() # np.reciprocal(interaction['predOP'].cpu().numpy()) # IPS weighting
         results = cal_ratpred_metrics(scores.cpu().numpy(), targets.cpu().numpy(), predOP = predOP, users = interaction['user'].cpu().numpy())
+        # for i in range(50):
+        #     print(round(scores.cpu().numpy()[i], 2), targets.cpu().numpy()[i], abs(scores.cpu().numpy()[i]-targets.cpu().numpy()[i])<=0.5, predOP[i])
         print('\t'.join(results.keys()), '\n', '\t'.join([str(x) for x in results.values()]))
 
         # self._save_something(preds=scores.cpu().numpy())
@@ -883,6 +907,22 @@ class OPPT_Evaluator(AbstractEvaluator):
                 scores[itemages == T] = s_T
                 scores_T.append(s_T)
             print("****** Note we want to know what happened if we give all the predicted scores %s" % str(scores_T))
+        elif variety == 4: # avg_{i,t}
+            items = interaction['item']
+            for i in range(self.data.n_items):
+                scores[items == i] = train[train['ItemId'] == i]['rating'].mean()
+            itemages = interaction['itemage']
+            for i in range(self.data.n_items):
+                train_  = train[train['ItemId'] == i]
+                for ia in range(self.data.n_periods):
+                    if (train_['ItemAge'] == ia).sum() > 0:
+                        scores[(items == i) & (itemages == ia)] = train_[train_['ItemAge'] == ia]['rating'].mean()
+
+        elif variety == 5: # pop_i
+            train = self.data.train
+            items = interaction['item']
+            for i in range(self.data.n_items):
+                scores[items == i] = train[train['ItemId'] == i]['rating'].mean()
         return scores
 
     def _save_something(self, preds=None, target=None):
@@ -986,7 +1026,7 @@ class TART_Evaluator(AbstractEvaluator):
             scores = self._eval_epoch(interaction)
         self._save_something(preds=scores.cpu().numpy())
         self._save_something(preds=interaction['target'].cpu().numpy())
-        self._save_pred_ratings(scores.cpu().numpy())
+        # self._save_pred_ratings(scores.cpu().numpy())
         targets = interaction['target']
         results = cal_ratpred_metrics(scores.cpu().numpy(), targets.cpu().numpy())
         print('\t'.join(results.keys()), '\n', '\t'.join([str(x) for x in results.values()]))
@@ -1017,6 +1057,21 @@ class TART_Evaluator(AbstractEvaluator):
                 scores[itemages == T] = s_T
                 scores_T.append(s_T)
             print("****** Note we want to know what happened if we give all the predicted scores %s" % str(scores_T))
+        elif variety == 4: # avg_{i,t}
+            items = interaction['item']
+            for i in range(self.data.n_items):
+                scores[items == i] = train[train['ItemId'] == i]['rating'].mean()
+            itemages = interaction['itemage']
+            for i in range(self.data.n_items):
+                train_  = train[train['ItemId'] == i]
+                for ia in range(self.data.n_periods):
+                    if (train_['itemage'] == ia).sum() > 0:
+                        scores[(items == i) & (itemages == ia)] = train_[train_['itemage'] == ia]['rating'].mean()
+
+        elif variety == 5: # pop_i
+            items = interaction['item']
+            for i in range(self.data.n_items):
+                scores[items == i] = train[train['ItemId'] == i]['rating'].mean()
         return scores
 
     def _save_something(self, preds=None, target=None):

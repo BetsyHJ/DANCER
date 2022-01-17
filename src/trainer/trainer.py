@@ -1031,7 +1031,7 @@ class OPPT_Trainer(AbstractTrainer):
         # results = cal_op_metrics(scores.cpu().numpy(), targets.cpu().numpy(), w_sigmoid=False)
         predOP = None
         if 'ips' in self.debiasing:
-            predOP = np.reciprocal(interaction['predOP'].cpu().numpy()) # IPS 
+            predOP = interaction['predOP'].cpu().numpy() # np.reciprocal(interaction['predOP'].cpu().numpy()) # IPS 
         results = cal_ratpred_metrics(scores.cpu().numpy(), targets.cpu().numpy(), predOP = predOP, users = interaction['user'].cpu().numpy())
         return results, losses
 
@@ -1177,7 +1177,7 @@ class TART_Trainer(AbstractTrainer):
         # results = cal_op_metrics(scores.cpu().numpy(), targets.cpu().numpy(), w_sigmoid=False)
         predOP = None
         if 'ips' in self.debiasing:
-            predOP = np.reciprocal(interaction['predOP'].cpu().numpy()) # IPS 
+            predOP = interaction['predOP'].cpu().numpy() # np.reciprocal(interaction['predOP'].cpu().numpy()) # IPS 
         results = cal_ratpred_metrics(scores.cpu().numpy(), targets.cpu().numpy(), predOP = predOP, users = interaction['user'].cpu().numpy())
         return results, losses
 
