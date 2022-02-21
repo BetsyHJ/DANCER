@@ -25,11 +25,12 @@ class Dataset(object):
             self.n_periods = max(max(self.train['itemage']), max(self.valid['itemage']), max(self.test['itemage'])) + 1
 
             ''' use estimated propensities / predOP '''
-            # self.estimated_predOP_replace(mode='b2_i', static=False)
-            # self.estimated_predOP_replace(mode='b3', static=False)
-            # self.estimated_predOP_replace(mode='b4', static=False)
-            # self.estimated_predOP_replace(mode='mf', static=False)
-            # self.estimated_predOP_replace(mode='tmtf', static=False)
+            if ('StaticIPS' in config) and (config['StaticIPS']):
+                self.estimated_predOP_replace(mode='b2_i', static=False)
+                # self.estimated_predOP_replace(mode='b3', static=False)
+                # self.estimated_predOP_replace(mode='b4', static=False)
+                # self.estimated_predOP_replace(mode='mf', static=False)
+                # self.estimated_predOP_replace(mode='tmtf', static=False)
     
             # map the itemage into the bins:
             if 'simulation' in dataset:

@@ -51,6 +51,18 @@ def run_dqn():
     args = set_hparams()
     if args.mode is not None:
         conf['mode'] = args.mode.lower()
+    if args.task is not None:
+        conf['task'] = args.task
+    if conf['task'].upper() in ['OIPT', 'OPPT']:
+        conf['data.input.dataset'] = 'ml-latest-small'
+    else:
+        conf['data.input.dataset'] = 'simulation3'
+    # for splitting setting or observed setting in first two tasks:
+    if conf['task'].upper() == 'OIPT':
+        if args.setting is not None:
+            conf['splitting'] = args.setting
+    elif conf['task'].upper() == 'OPPT':
+        conf['debiasing'] == args.setting
 
     # init DQN
     config = load_parameters(conf['mode'])
@@ -75,6 +87,14 @@ def run_dqn():
     config['task'] = task
     if task.upper() in ['OPPT', 'TART']:
         config['loss_type'] = 'mse'
+    if (task.upper() == 'TART') and (args.setting is not None):
+        conf['StaticIPS'] = (args.setting.lower() == 'staticips')
+        if 'ips' in args.setting.lower():
+            conf['debiasing'] = 'ips'
+        elif 'dancer' in args.setting.lower():
+            conf['debiasing'] = 'ips'
+        else:
+            conf['debiasing'] = 'naive'
     _logging_(conf, config)
     ## loading data
     data = Dataset(conf, task=task)
@@ -186,16 +206,15 @@ def load_parameters(mode):
 def set_hparams():
     import argparse
     parser = argparse.ArgumentParser()
-    # parser.add_argument('--seed', type=int)
+    parser.add_argument('--task', type=str, default=None)
     parser.add_argument('--lr', type=float, default=None)
     parser.add_argument('--reg', type=float, default=None)
     parser.add_argument('--seed', type=int, default=None)
     parser.add_argument('--mode', type=str, default=None)
+    parser.add_argument('--setting', type=str, default=None)
     args = parser.parse_args()
-    print("now lr is", args.lr, ", reg is", args.reg, ", seed is", args.seed, ", and mode is", args.mode, flush=True)
     return args
 
 if __name__ == "__main__":
     run_dqn()
     print("End. " + strftime("%Y-%m-%d %H:%M:%S", localtime(time())))
-# print("checkpoint")

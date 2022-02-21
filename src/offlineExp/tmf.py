@@ -157,9 +157,12 @@ class TMF_variety(TMF):
         self.apply(self._init_weights)
     
     def log_info(self):
-        print("********* Using TMF-variety: (v_u * v_i) + b + b_i + b_u + b_T **********")
+        if self.task.upper() == 'OIPT':
+            print("********* Using TMF-variety: (v_u * v_i) + b_T **********")
+        else: 
+            print("********* Using TMF-variety: (v_u * v_i) + b + b_i + b_u + b_T **********")
         # print("********* Using TMF-variety: (v_u * v_i) + b + b_i + b_u **********")
-        # print("********* Using TMF-variety: (v_u * v_i) + b_T **********")
+        
         
 
     def forward(self, user, item, itemage):
@@ -170,8 +173,11 @@ class TMF_variety(TMF):
         # [B 1]
         # # p1 + b
         # f_uit = torch.mul(torch.mul(r_ui, itemage), self.w) # + self.b
-        f_uit = r_ui + self.b + self.b_u(user).squeeze() + self.b_i(item).squeeze() + self.global_T(itemage).squeeze()
-        # f_uit = r_ui + self.global_T(itemage).squeeze()
+        if self.task.upper() == 'OIPT':
+            f_uit = r_ui + self.global_T(itemage).squeeze()
+        else:
+            f_uit = r_ui + self.b + self.b_u(user).squeeze() + self.b_i(item).squeeze() + self.global_T(itemage).squeeze()
+        
         if self.m is None:
             return f_uit
         return self.m(f_uit) # [B, D] -> [B]

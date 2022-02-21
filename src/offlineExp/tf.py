@@ -159,17 +159,21 @@ class TMTF(TF):
     def log_info(self):
         # print("********* Using TMTF: v_u * (v_i + v_t) + b_T **********")
         # print("********* Using TMTF: v_u * (v_i + v_t) + v_i * v_t + b_T **********")
-        # print("********* Using TMTF: v_i * (v_u + v_t) + b_T **********")
-        print("********* Using TMTF: v_u * (v_i + v_t) + b + b_i + b_u + b_T **********")
+        if self.task.upper() == 'OIPT':
+            print("********* Using TMTF: v_i * (v_u + v_t) + b_T **********")
+        else:
+            print("********* Using TMTF: v_u * (v_i + v_t) + b + b_i + b_u + b_T **********")
 
     def forward(self, user, item, itemage):
         user_e = self.user_embedding(user)
         item_e = self.item_embedding(item)
         time_e = self.time_embedding(itemage)
-        # # u_v * (i_v + T_v) + b_T
-        # uit_e = torch.mul(user_e, time_e + item_e).sum(-1).float() + self.b_T(itemage).squeeze()
-        # # u_v * (i_v + T_v) + b + b_i + b_u + b_T 
-        uit_e = torch.mul(user_e, time_e + item_e).sum(-1).float() + self.b + self.b_u(user).squeeze() + self.b_i(item).squeeze() + self.b_T(itemage).squeeze()
+        if self.task.upper() == 'OIPT':
+            # # u_v * (i_v + T_v) + b_T
+            uit_e = torch.mul(user_e, time_e + item_e).sum(-1).float() + self.b_T(itemage).squeeze()
+        else:
+            # # u_v * (i_v + T_v) + b + b_i + b_u + b_T 
+            uit_e = torch.mul(user_e, time_e + item_e).sum(-1).float() + self.b + self.b_u(user).squeeze() + self.b_i(item).squeeze() + self.b_T(itemage).squeeze()
         # # u_v * i_v + u_v * T_v + i_v * T_v
         # uit_e = torch.mul(user_e, time_e + item_e).sum(-1).float() + torch.mul(item_e, time_e).sum(-1).float() + self.b_T(itemage).squeeze()
         # # v_i * (v_u + v_t) + b_T
