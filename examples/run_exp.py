@@ -62,7 +62,7 @@ def run_dqn():
         if args.setting is not None:
             conf['splitting'] = args.setting
     elif conf['task'].upper() == 'OPPT':
-        conf['debiasing'] == args.setting
+        conf['debiasing'] = args.setting
 
     # init DQN
     config = load_parameters(conf['mode'])
