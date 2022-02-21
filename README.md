@@ -77,4 +77,5 @@ $ python run_exp.py --task TART --mode MF_v --setting DANCER --lr 1e-4 --reg 1e-
 $ python run_exp.py --task TART --mode TMF_v --setting DANCER --lr 1e-4 --reg 1e-3
 ```
 The checkpoint will be stored in the folder ```./checkpoint_dir/``` which should be created before running the commands.
+And the results will be displayed in the last few lines of the output with the corresponding metrics.
 Moreover, results reported in the paper are the averages of 10 independent runs and can be reproduced with random seed 2012 ~ 2021 with seed setting e.g., ```--seed 2012```.
