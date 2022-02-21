@@ -1,8 +1,28 @@
 # DANCER
 This repository contains the code used for the experiments in ["It Is Different When Items Are Older: Debiasing Recommendations When Selection Bias and User Preferences Are Dynamic"](https://arxiv.org/abs/2111.12481).
 
+## Citation
+If you use this code to produce results for your scientific publication, or if you share a copy or fork, please refer to our WSDM 2022 paper:
+```
+@inproceedings{huang-2022-different,
+author = {Huang, Jin and Oosterhuis, Harrie and de Rijke, Maarten},
+booktitle = {WSDM 2022: The Fifteenth International Conference on Web Search and Data Mining},
+date-added = {2021-11-14 21:03:42 +0100},
+date-modified = {2021-11-14 21:03:42 +0100},
+month = {February},
+publisher = {ACM},
+title = {It Is Different When Items Are Older: Debiasing Recommendations When Selection Bias and User Preferences are Dynamic},
+year = {2022}}
+```
+
 ## Required packages
-TBD.
+You can install conda and then create Python 3.6 Conda environment. 
+Run conda create -n Dancer python=3.6 to create the environment.
+Activate the environment by running conda activate Dancer. Then try to install the required packages:
+```
+$ pip install -r requirements.txt
+```
+
 
 ## Reproducing Experiments
 We compare time-aware and time-unaware methods to answer three research questions. 
