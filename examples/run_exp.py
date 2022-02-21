@@ -56,7 +56,7 @@ def run_dqn():
     if conf['task'].upper() in ['OIPT', 'OPPT']:
         conf['data.input.dataset'] = 'ml-latest-small'
     else:
-        conf['data.input.dataset'] = 'simulation3'
+        conf['data.input.dataset'] = 'simulation2'
     # for splitting setting or observed setting in first two tasks:
     if conf['task'].upper() == 'OIPT':
         if args.setting is not None:

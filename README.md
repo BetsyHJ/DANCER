@@ -78,5 +78,3 @@ $ python run_exp.py --task TART --mode TMF_v --setting DANCER --lr 1e-4 --reg 1e
 ```
 
 Moreover, results reported in the paper are the averages of 10 independent runs and can be reproduced with random seed 2012 ~ 2021 with seed setting e.g., ```--seed 2012```.
-
-For using the simulation of MovieLens dataset in the third task, please unzip ```./data/simulation2.zip``` first.
