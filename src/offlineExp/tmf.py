@@ -150,9 +150,10 @@ class TMF_variety(TMF):
         self.item_Dyn_embedding = None
         self.time_embedding = None
         self.item_embedding = nn.Embedding(self.n_items, self.embedding_size)
-        self.b_u = nn.Embedding(self.n_users, 1)
-        self.b_i = nn.Embedding(self.n_items, 1)
-        self.b = Parameter(torch.Tensor(1))
+        if self.task.upper() == 'OPPT':
+            self.b_u = nn.Embedding(self.n_users, 1)
+            self.b_i = nn.Embedding(self.n_items, 1)
+            self.b = Parameter(torch.Tensor(1))
         self.global_T = nn.Embedding(self.n_periods, 1)
         self.apply(self._init_weights)
     
